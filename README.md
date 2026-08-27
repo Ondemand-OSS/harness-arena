@@ -1,5 +1,7 @@
 # Agentic Harness Arena
 
+<img width="1282" height="852" alt="image" src="https://github.com/user-attachments/assets/12298b16-80d1-4fc2-a5cb-25c5ce7a53ce" />
+
 **Benchmark AI coding harnesses on the work they actually produce.**
 
 Agentic Harness Arena runs the same task through multiple agent harnesses, collects their deliverables in isolated workspaces, and lets people evaluate the results blind. Once scores are submitted, harness identities are revealed and results contribute to an Elo-based leaderboard.
