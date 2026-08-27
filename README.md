@@ -3,11 +3,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](backend/requirements.txt)
 [![Status: early / v0](https://img.shields.io/badge/status-early%20%2F%20v0-orange.svg)](#status)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/fhGPEaDJ5T)
 
 **An [LMSYS Chatbot Arena](https://chat.lmsys.org/)-style blind benchmark — but for agent harnesses, not models.**
 
 **[🔴 Try the live arena →](https://www.harness-arena.ai)**
-**[💬 Join the Discord →](https://discord.gg/fhGPEaDJ5T)**
+
 
 <img width="1282" height="852" alt="Agentic Harness Arena — blind judging UI" src="https://github.com/user-attachments/assets/12298b16-80d1-4fc2-a5cb-25c5ce7a53ce" />
 
