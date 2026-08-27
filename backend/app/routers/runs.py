@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import asyncio
 from collections import defaultdict
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pymongo.database import Database
 
@@ -799,6 +801,64 @@ def get_run(run_id: int, db: Database = Depends(get_db), user: dict | None = Dep
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
     return _run_out(run, db, user)
+
+
+# How often the SSE stream below re-checks the run document for changes.
+LOG_STREAM_POLL_SECONDS = 1.0
+
+
+@router.get("/{run_id}/logs/stream")
+async def stream_run_log(
+    run_id: int,
+    token: str | None = Query(default=None, description="Auth token — only needed because browser EventSource can't set X-User-Token."),
+    x_user_token: str | None = Header(default=None),
+    db: Database = Depends(get_db),
+):
+    """Server-Sent Events stream of a run's live log — one event whenever
+    `raw_log`/status/progress changes, polling the run document underneath
+    (see runner.py's persist_live_log for how raw_log fills in while a
+    harness is still running). Works for a run in any state: a pending run
+    streams until it starts producing output, a finished run gets one event
+    with the final state and the stream closes immediately.
+
+    Open to any authenticated user — not scoped to the caller's own runs,
+    same as `GET /{run_id}` itself. Accepts the auth token via `?token=`
+    as well as the usual `X-User-Token` header: this is the one endpoint a
+    browser calls with a plain `EventSource`, which cannot set custom
+    headers, so it needs a URL-based fallback. `x_user_token` still wins
+    when both are present (a manual fetch-based SSE client that *can* send
+    the header shouldn't be second-guessed by a stray query param)."""
+    user = current_user(x_user_token or token, db)
+    if user is None:
+        raise HTTPException(status_code=401, detail="sign in to continue")
+
+    async def event_gen():
+        last_payload = None
+        while True:
+            run = db.runs.find_one(
+                {"_id": run_id},
+                {"raw_log": 1, "status": 1, "deliverables_done": 1, "deliverables_expected": 1, "error_message": 1},
+            )
+            if run is None:
+                yield "event: error\ndata: run not found\n\n"
+                return
+            payload = json.dumps(
+                {
+                    "status": run.get("status"),
+                    "raw_log": run.get("raw_log", ""),
+                    "deliverables_done": run.get("deliverables_done", 0),
+                    "deliverables_expected": run.get("deliverables_expected", 0),
+                    "error_message": _public_error_message(run, user),
+                }
+            )
+            if payload != last_payload:
+                yield f"data: {payload}\n\n"
+                last_payload = payload
+            if run.get("status") in ("done", "error", "stopped"):
+                return
+            await asyncio.sleep(LOG_STREAM_POLL_SECONDS)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @router.get("/deliverable/{deliverable_id}/content")

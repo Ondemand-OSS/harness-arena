@@ -434,6 +434,37 @@ async def _execute_one_leased(
         )
 
         adapter = get_adapter(db, harness_key)
+
+        # Every harness streams its output incrementally now (OnDemand via
+        # its provider's own SSE, the CLI-spawn adapters via their
+        # subprocess's stdout/stderr — see harnesses/_collect.py). Keep only
+        # an admin-only rolling tail in the run row so refreshing the
+        # monitor (or a worker crash) never loses the diagnostics seen so
+        # far. Every adapter scrubs a chunk before this callback receives it.
+        live_log_parts: list[str] = []
+        live_log_length = 0
+        last_live_log_flush = 0.0
+
+        def persist_live_log(chunk: str) -> None:
+            nonlocal live_log_length, last_live_log_flush
+            if not chunk:
+                return
+            live_log_parts.append(chunk)
+            live_log_length += len(chunk)
+            while live_log_length > RAW_LOG_MAX_CHARS and live_log_parts:
+                removed = live_log_parts.pop(0)
+                live_log_length -= len(removed)
+
+            now = time.monotonic()
+            if now - last_live_log_flush < LIVE_LOG_FLUSH_INTERVAL_SECONDS:
+                return
+            db.runs.update_one(
+                {"_id": run_id, "status": "running"},
+                {"$set": {"raw_log": "".join(live_log_parts)[-RAW_LOG_MAX_CHARS:]}},
+            )
+            last_live_log_flush = now
+
+        provider.live_log_callback = persist_live_log
         if harness_key == "ondemand":
             # Persist immediately after session creation, not only when the
             # adapter eventually returns. A server restart can interrupt the
@@ -446,33 +477,9 @@ async def _execute_one_leased(
                     "$addToSet": {"ondemand_session_ids": session_id},
                 },
             )
-            # OnDemand sends answer deltas over SSE. Keep only an admin-only
-            # rolling tail in the run row so refreshing the monitor (or a
-            # worker crash) never loses the diagnostics seen so far. The
-            # adapter scrubs every chunk before this callback receives it.
-            live_log_parts: list[str] = []
-            live_log_length = 0
-            last_live_log_flush = 0.0
-
-            def persist_live_log(chunk: str) -> None:
-                nonlocal live_log_length, last_live_log_flush
-                if not chunk:
-                    return
-                live_log_parts.append(chunk)
-                live_log_length += len(chunk)
-                while live_log_length > RAW_LOG_MAX_CHARS and live_log_parts:
-                    removed = live_log_parts.pop(0)
-                    live_log_length -= len(removed)
-
-                now = time.monotonic()
-                if now - last_live_log_flush < LIVE_LOG_FLUSH_INTERVAL_SECONDS:
-                    return
-                db.runs.update_one(
-                    {"_id": run_id, "status": "running"},
-                    {"$set": {"raw_log": "".join(live_log_parts)[-RAW_LOG_MAX_CHARS:]}},
-                )
-                last_live_log_flush = now
-
+            # OnDemand sends answer deltas over its own provider SSE, not
+            # through _collect.py's subprocess pump — feed the same throttled
+            # writer as every other harness above.
             provider.ondemand_log_callback = persist_live_log
         try:
             if stop_requested():
