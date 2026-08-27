@@ -7,6 +7,7 @@
 **An [LMSYS Chatbot Arena](https://chat.lmsys.org/)-style blind benchmark — but for agent harnesses, not models.**
 
 **[🔴 Try the live arena →](https://www.harness-arena.ai)**
+**[💬 Join the Discord →](https://discord.gg/fhGPEaDJ5T)**
 
 <img width="1282" height="852" alt="Agentic Harness Arena — blind judging UI" src="https://github.com/user-attachments/assets/12298b16-80d1-4fc2-a5cb-25c5ce7a53ce" />
 
@@ -152,6 +153,8 @@ Early / v0. Claude Code, Codex CLI, and OnDemand run real, live comparisons toda
 ## Contributing
 
 Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request.
+
+For questions, ideas, or discussion, join us on [Discord](https://discord.gg/fhGPEaDJ5T).
 
 If you find this useful, a ⭐ on the repo helps others find it.
 
