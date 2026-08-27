@@ -24,7 +24,7 @@ from ..runner import (
     retry_existing_run,
     start_runs,
 )
-from ..schemas import BoardRowOut, CompareOut, DeliverableOut, RunOut, RunRequest, RunsBoardOut, RunsOverviewIn, RunTriggerOut, TaskOut, TaskOverviewOut
+from ..schemas import BoardRowOut, BoardTaskOut, CompareOut, DeliverableOut, RunOut, RunRequest, RunsBoardOut, RunsOverviewIn, RunTriggerOut, TaskOut, TaskOverviewOut
 from ..taxonomy import parse_reference_filenames
 from ..users import current_user, is_admin, require_arena_admin, require_user
 from ..webproject import is_web_project
@@ -833,18 +833,19 @@ def _latest_run_at(runs: list[RunOut]) -> dt.datetime | None:
     return max(timestamps) if timestamps else None
 
 
-def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None) -> list[BoardRowOut]:
+def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None, harness_names: dict[str, str]) -> list[BoardRowOut]:
     """Port of BattleLog.jsx's buildRows — one row per round_id, or one
     'Not run' placeholder when the task has no runs/overview at all."""
+    board_task = BoardTaskOut.model_validate(task, from_attributes=True)
     if overview is None:
-        return [BoardRowOut(task=task, row_key=f"{task.id_aa}#empty", status="Not run", is_primary_card=True)]
+        return [BoardRowOut(task=board_task, row_key=f"{task.id_aa}#empty", status="Not run", is_primary_card=True)]
 
     all_runs_by_id = {r.id: r for r in [*overview.history, *overview.runs]}
     grouped: dict[str, list[RunOut]] = defaultdict(list)
     for run in all_runs_by_id.values():
         grouped[str(run.round_id) if run.round_id is not None else f"run-{run.id}"].append(run)
     if not grouped:
-        return [BoardRowOut(task=task, row_key=f"{task.id_aa}#empty", status="Not run", is_primary_card=True)]
+        return [BoardRowOut(task=board_task, row_key=f"{task.id_aa}#empty", status="Not run", is_primary_card=True)]
 
     compare_by_run_id = {e.run_id: e for e in overview.compare.entries}
     rows: list[BoardRowOut] = []
@@ -863,13 +864,22 @@ def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None) -> lis
             compare_entry = compare_by_run_id.get(run.id)
             if compare_entry is not None:
                 merged.update(compare_entry.model_dump())
+            # CompareEntry's harness_key/harness_name are anonymized (None)
+            # until the viewer has judged this round — right for the blind
+            # Judge screen, wrong here: Battle Log/Evaluate cards always show
+            # real identity. Re-assert the real run values last, same order
+            # buildRows() in BattleLog.jsx uses (spread comparison, then
+            # override harness_key/harness_name from the run itself).
+            merged["harness_key"] = run.harness_key
+            merged["harness_name"] = harness_names.get(run.harness_key, run.harness_key)
             merged["run_id"] = run.id
             merged["round_id"] = run.round_id
             merged["score"] = merged.get("already_scored")
             entries.append(merged)
         progress_entries = [
             {
-                "run_id": r.id, "round_id": r.round_id, "harness_key": r.harness_key, "model": r.model,
+                "run_id": r.id, "round_id": r.round_id, "harness_key": r.harness_key,
+                "harness_name": harness_names.get(r.harness_key, r.harness_key), "model": r.model,
                 "done": r.deliverables_done, "expected": r.deliverables_expected, "status": r.status,
                 "retrying": r.is_retrying, "can_stop": r.can_stop, "submitted_by": r.submitted_by,
             }
@@ -877,7 +887,8 @@ def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None) -> lis
         ]
         failed_entries = [
             {
-                "run_id": r.id, "round_id": r.round_id, "harness_key": r.harness_key, "model": r.model,
+                "run_id": r.id, "round_id": r.round_id, "harness_key": r.harness_key,
+                "harness_name": harness_names.get(r.harness_key, r.harness_key), "model": r.model,
                 "status": r.status, "error_message": r.error_message or ("Run stopped." if r.status == "stopped" else ""),
                 "can_retry": r.can_retry, "submitted_by": r.submitted_by,
             }
@@ -897,7 +908,7 @@ def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None) -> lis
 
         rows.append(
             BoardRowOut(
-                task=task,
+                task=board_task,
                 row_key=f"{task.id_aa}#{key}",
                 round_id=sorted_runs[0].round_id,
                 status=_resolve_row_status(
@@ -960,10 +971,11 @@ def runs_board(
     raw_tasks = _list_tasks_for_board(Response(), category=category, group=group, include_deleted=include_deleted, page=1, limit=None, db=db, user=user)
     tasks = [t if isinstance(t, TaskOut) else TaskOut.model_validate(t) for t in raw_tasks]
     overviews = _build_overviews([t.id_aa for t in tasks], db, user)
+    harness_names = {key: adapter.name for key, adapter in all_adapters(db).items()}
 
     rows: list[BoardRowOut] = []
     for task in tasks:
-        rows.extend(_board_rows_for_task(task, overviews.get(task.id_aa)))
+        rows.extend(_board_rows_for_task(task, overviews.get(task.id_aa), harness_names))
     rows = [r for r in rows if r.status != "Not run"]
     if status:
         rows = [r for r in rows if r.status == status]
