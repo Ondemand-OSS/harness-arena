@@ -108,6 +108,10 @@ class OpenCodeAdapter:
         before = snapshot(workdir)
         expected = parse_deliverables(getattr(task, "expected_deliverables", ""))
 
+        def _live_output(chunk: str) -> None:
+            if provider.live_log_callback:
+                provider.live_log_callback(_scrub(chunk, provider.api_key))
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *command,
@@ -127,7 +131,7 @@ class OpenCodeAdapter:
 
         try:
             stdout_bytes, stderr_bytes, timed_out, completed_expected = await communicate_with_deliverable_timeout(
-                proc, prompt, workdir, before, TIMEOUT_SECONDS, expected,
+                proc, prompt, workdir, before, TIMEOUT_SECONDS, expected, on_output=_live_output,
             )
         except BaseException:
             if proc.returncode is None:

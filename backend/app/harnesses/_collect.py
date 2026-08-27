@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import re
 import time
+from typing import Callable
 
 ALLOWED_EXTENSIONS = {
     ".xlsx", ".xlsm", ".xls", ".csv", ".tsv", ".docx", ".pdf", ".txt",
@@ -208,8 +210,45 @@ def expected_deliverables_ready(workdir: str, expected: list[str]) -> bool:
     return True
 
 
+async def _write_stdin(proc, prompt: str) -> None:
+    # Same race `_finish_communicate` used to guard against: the process can
+    # exit (or be killed) while this write is still mid-flight.
+    try:
+        proc.stdin.write(prompt.encode("utf-8"))
+        await proc.stdin.drain()
+    except (RuntimeError, BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            proc.stdin.close()
+
+
+async def _pump(stream, chunks: list[bytes], on_output: Callable[[str], None] | None) -> None:
+    """Read a stream to EOF in small chunks, both accumulating the bytes
+    (for the final raw_log, same as communicate() used to hand back) and,
+    if given, forwarding each chunk to `on_output` as it arrives — this is
+    what makes the log live instead of only available after the process
+    exits. A broken callback must never take the run down with it."""
+    while True:
+        chunk = await stream.read(4096)
+        if not chunk:
+            return
+        chunks.append(chunk)
+        if on_output is not None:
+            try:
+                on_output(chunk.decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+
+
 async def communicate_with_deliverable_timeout(
-    proc, prompt: str, workdir: str, before: dict[str, str], timeout: float, expected: list[str] | None = None
+    proc,
+    prompt: str,
+    workdir: str,
+    before: dict[str, str],
+    timeout: float,
+    expected: list[str] | None = None,
+    on_output: Callable[[str], None] | None = None,
 ):
     """Run a CLI until it exits, completes every expected file, or stalls.
 
@@ -218,42 +257,42 @@ async def communicate_with_deliverable_timeout(
     creates a file still has a bounded runtime.  Once every expected filename
     is present and non-empty, stop the CLI and return its files immediately;
     further agent refinement is not part of producing the requested result.
-    """
-    async def _finish_communicate() -> tuple[bytes, bytes]:
-        # A process that exits (or is killed) while communicate()'s own
-        # stdin-write coroutine is still mid-flight is a real race: on some
-        # event loops (uvloop observed in practice) that raises instead of
-        # the BrokenPipeError stdlib asyncio quietly swallows here. Either
-        # way the process is already gone — treat it as "no more output to
-        # capture" rather than letting it crash the whole run.
-        try:
-            return await communicate_task
-        except (RuntimeError, BrokenPipeError, ConnectionResetError):
-            return b"", b""
 
-    communicate_task = asyncio.create_task(proc.communicate(prompt.encode("utf-8")))
+    stdin/stdout/stderr are pumped manually rather than via proc.communicate()
+    so that, when `on_output` is given, stdout/stderr bytes reach it as they
+    are produced instead of only once the process exits.
+    """
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    stdin_task = asyncio.create_task(_write_stdin(proc, prompt))
+    stdout_task = asyncio.create_task(_pump(proc.stdout, stdout_chunks, on_output))
+    stderr_task = asyncio.create_task(_pump(proc.stderr, stderr_chunks, on_output))
+    wait_task = asyncio.create_task(proc.wait())
+
+    async def _finish() -> tuple[bytes, bytes]:
+        await asyncio.gather(stdin_task, stdout_task, stderr_task, wait_task, return_exceptions=True)
+        return b"".join(stdout_chunks), b"".join(stderr_chunks)
+
     known_activity = deliverable_activity(workdir, before)
     deadline = time.monotonic() + timeout
-    while not communicate_task.done():
+    while not wait_task.done():
         if expected_deliverables_ready(workdir, expected or []):
             if proc.returncode is None:
                 proc.kill()
-            stdout_bytes, stderr_bytes = await _finish_communicate()
+            stdout_bytes, stderr_bytes = await _finish()
             return stdout_bytes, stderr_bytes, False, True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             if proc.returncode is None:
                 proc.kill()
-            stdout_bytes, stderr_bytes = await _finish_communicate()
+            stdout_bytes, stderr_bytes = await _finish()
             return stdout_bytes, stderr_bytes, True, False
         try:
-            await asyncio.wait_for(asyncio.shield(communicate_task), timeout=min(0.5, remaining))
+            await asyncio.wait_for(asyncio.shield(wait_task), timeout=min(0.5, remaining))
         except asyncio.TimeoutError:
             current_activity = deliverable_activity(workdir, before)
             if current_activity != known_activity:
                 known_activity = current_activity
                 deadline = time.monotonic() + timeout
-        except (RuntimeError, BrokenPipeError, ConnectionResetError):
-            pass
-    stdout_bytes, stderr_bytes = await _finish_communicate()
+    stdout_bytes, stderr_bytes = await _finish()
     return stdout_bytes, stderr_bytes, False, False

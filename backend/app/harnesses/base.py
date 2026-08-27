@@ -23,6 +23,11 @@ class ProviderSettings:
     # is still in progress. The runner persists a throttled rolling tail for
     # the admin-only run monitor; adapters must never send secrets here.
     ondemand_log_callback: Callable[[str], None] | None = None
+    # Same idea as ondemand_log_callback, but generic to every harness — the
+    # runner sets this for every run, and CLI adapters feed it scrubbed
+    # stdout/stderr chunks as their subprocess produces them (see
+    # harnesses/_collect.py's communicate_with_deliverable_timeout).
+    live_log_callback: Callable[[str], None] | None = None
 
 
 @dataclasses.dataclass
