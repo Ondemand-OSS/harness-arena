@@ -623,7 +623,8 @@ async def _stream_query(
                         message_id = event.get("messageId") or message_id
                         if isinstance(event.get("eventIndex"), int):
                             last_event_index = event["eventIndex"]
-                        if event.get("eventType") == "fulfillment":
+                        event_type = event.get("eventType")
+                        if event_type == "fulfillment":
                             chunk = event.get("answer")
                             if isinstance(chunk, str):
                                 attempt_parts.append(chunk)
@@ -634,6 +635,50 @@ async def _stream_query(
                                 # result to be scrubbed.
                                 if log_callback:
                                     log_callback(_scrub(chunk, secret))
+                        elif log_callback:
+                            # Several non-fulfillment event types carry real
+                            # human-readable text too, not just internal
+                            # bookkeeping — a run doing a long stretch of
+                            # planning/tool-calling before its first
+                            # fulfillment chunk otherwise looked identical to
+                            # a stalled one. Known shapes, verified against
+                            # real event payloads (two distinct field
+                            # conventions in use, checked for by field
+                            # presence rather than the exact eventType
+                            # string, so sibling event types sharing a shape
+                            # — e.g. step_thinking/fulfillment_thinking
+                            # alongside planning_thinking — are covered for
+                            # free):
+                            #   planning_thinking, step_thinking,
+                            #   fulfillment_thinking  -> thinking.delta
+                            #   planning_output, step_output -> output.delta
+                            #   statusLog (agents_retrieved, executing,
+                            #   execution_completed, fulfilling, ...)
+                            #                          -> currentStatusLog.statusMessage
+                            #   ondemand_agent.thinking -> data.content
+                            #   ondemand_agent.code_generated -> data.delta
+                            #     (streamed code; data.final marks the last
+                            #     chunk, not read here — the delta text
+                            #     alone is enough for a live view)
+                            # A bare `heartbeat` event (no eventType, no
+                            # text anywhere) is genuinely contentless and
+                            # correctly produces nothing at all — the
+                            # breadcrumb fallback only fires for a *typed*
+                            # event this function doesn't specifically
+                            # recognize, so an unknown-but-real event is
+                            # still visible as "something happened" while a
+                            # heartbeat doesn't spam the live view.
+                            text = (
+                                (event.get("thinking") or {}).get("delta")
+                                or (event.get("output") or {}).get("delta")
+                                or (event.get("currentStatusLog") or {}).get("statusMessage")
+                                or (event.get("data") or {}).get("content")
+                                or (event.get("data") or {}).get("delta")
+                            )
+                            if isinstance(text, str) and text:
+                                log_callback(_scrub(text, secret))
+                            elif event_type:
+                                log_callback(_scrub(f"[{event_type}]\n", secret))
         except httpx.RequestError as exc:
             connection_error = f"request failed ({type(exc).__name__}): {_request_error_detail(exc)}"
 

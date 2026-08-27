@@ -96,6 +96,13 @@ class OpenCodeAdapter:
             "--dir", workdir,
             "--auto",
             "--pure",
+            # Verified via `opencode run --help`: writes to stderr, not
+            # stdout, so this doesn't touch the stream-json stdout parsing
+            # below — it only gives the live-log view (see runner.py's
+            # persist_live_log) something to show besides silence between
+            # `--format json` stdout events, which are otherwise sparse.
+            "--print-logs",
+            "--log-level", "INFO",
             "--",
             prompt,
         ]
