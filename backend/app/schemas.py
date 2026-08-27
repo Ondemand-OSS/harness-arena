@@ -284,13 +284,34 @@ class TaskOverviewOut(BaseModel):
     compare: CompareOut
 
 
+class BoardTaskOut(BaseModel):
+    """TaskOut, minus the multi-paragraph text fields (prompt/rubric/
+    system_prompt/reference_files/dataset_version/expected_deliverables)
+    Battle Log's cards never render — see routers/runs.py::runs_board.
+    Those stay on GET /api/tasks/{id} for whatever actually needs them
+    (the judge screen, task detail)."""
+
+    id_aa: str
+    title: str
+    category: str
+    group: str = ""
+    deliverable_files: list[str] = []
+    deliverable_types: list[str] = []
+    has_judge_verdict: bool = False
+    submitted_by: str | None = None
+    submitted_by_avatar: str = ""
+    is_deleted: bool = False
+    results_deleted: bool = False
+    imported_at: dt.datetime | None = None
+
+
 class BoardRowOut(BaseModel):
     """One battle card — a task's task metadata plus one round's runs,
     merged server-side (port of the FE's buildRows/resolveRowStatus) so
     GET /api/runs/board can filter/sort/paginate on status and outcome,
     not just task-level fields. See routers/runs.py::runs_board."""
 
-    task: TaskOut
+    task: BoardTaskOut
     row_key: str
     round_id: str | int | None = None
     status: str
