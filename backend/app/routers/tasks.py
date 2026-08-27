@@ -29,6 +29,11 @@ from ..users import current_user, is_admin, require_arena_admin, require_user
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
+# Ceiling on `list_tasks`'s `limit` query param — keeps one request from
+# demanding the whole (unbounded) task set back as a single "page", the
+# same way runs.py's admin_list_runs caps its own `limit`.
+MAX_TASKS_PAGE_LIMIT = 50
+
 
 def _approved_category_groups(db: Database) -> dict[str, str]:
     return {
@@ -89,10 +94,19 @@ DEFAULT_DATASET_PATH = next(
 
 
 @router.get("", response_model=list[TaskOut])
-def list_tasks(response: Response, category: str | None = None, group: str | None = None, include_deleted: bool = False, db: Database = Depends(get_db), user: dict | None = Depends(current_user)):
+def list_tasks(response: Response, category: str | None = None, group: str | None = None, include_deleted: bool = False, page: int = 1, limit: int | None = None, db: Database = Depends(get_db), user: dict | None = Depends(current_user)):
     if include_deleted and not is_admin(user):
         raise HTTPException(status_code=403, detail="only the OnDemand admin can view deleted tasks")
-    cache_variant = json.dumps([category or "", group or ""], separators=(",", ":"))
+    # `group` is derived (see below), not a stored field, so pagination has
+    # to happen in-memory AFTER that filter — a Mongo-level skip/limit here
+    # would slice before group filtering and hand back short, misaligned
+    # pages. `limit` is opt-in: omitting it (the default) returns every
+    # task exactly as before, for every existing caller. Clamp up front so
+    # the cache key reflects the request's actual, effective page/limit.
+    if limit is not None:
+        page = max(1, page)
+        limit = max(1, min(limit, MAX_TASKS_PAGE_LIMIT))
+    cache_variant = json.dumps([category or "", group or "", page if limit is not None else None, limit], separators=(",", ":"))
     if not include_deleted:
         cached = cache_get("tasks", f"list:{cache_variant}")
         if cached is not None:
@@ -122,6 +136,9 @@ def list_tasks(response: Response, category: str | None = None, group: str | Non
     # serialization rather than in the Mongo query.
     if group:
         out = [t for t in out if t.group == group]
+    if limit is not None:
+        start = (page - 1) * limit
+        out = out[start : start + limit]
     if not include_deleted:
         cache_set("tasks", out, variant=f"list:{cache_variant}", ttl_seconds=90)
     return out
