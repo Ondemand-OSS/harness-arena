@@ -1184,6 +1184,50 @@ def get_run(run_id: int, db: Database = Depends(get_db), user: dict | None = Dep
 LOG_STREAM_POLL_SECONDS = 1.0
 
 
+def _run_log_snapshot(db: Database, run_id: int, user: dict) -> dict | None:
+    """The current live-log state of one run — status/raw_log/progress —
+    shared by both the polling endpoint and the SSE stream below so they
+    can never drift into returning different shapes. None means the run_id
+    doesn't exist."""
+    run = db.runs.find_one(
+        {"_id": run_id},
+        {"raw_log": 1, "status": 1, "deliverables_done": 1, "deliverables_expected": 1, "error_message": 1},
+    )
+    if run is None:
+        return None
+    return {
+        "status": run.get("status"),
+        "raw_log": run.get("raw_log", ""),
+        "deliverables_done": run.get("deliverables_done", 0),
+        "deliverables_expected": run.get("deliverables_expected", 0),
+        "error_message": _public_error_message(run, user),
+    }
+
+
+@router.get("/{run_id}/logs")
+def get_run_log(run_id: int, db: Database = Depends(get_db), user: dict = Depends(require_user)):
+    """One-shot snapshot of a run's live log — same payload shape as one
+    event of `GET /{run_id}/logs/stream` below, meant to be called on a
+    plain FE polling interval (e.g. every 1-2s via setInterval) instead of
+    a held-open connection.
+
+    This is the recommended way to watch a run live: `logs/stream`'s SSE
+    connection does not survive intact behind every deployment topology —
+    some gateways/proxies buffer the entire response and deliver nothing
+    until the connection closes, which defeats a long-lived stream
+    entirely (confirmed against this app's own staging deployment). A
+    plain request/response, repeated on an interval, has no such
+    dependency: every call completes normally on its own regardless of
+    what sits in front of the app.
+
+    Open to any authenticated user — not scoped to the caller's own runs,
+    same as `GET /{run_id}` itself."""
+    snapshot = _run_log_snapshot(db, run_id, user)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return snapshot
+
+
 @router.get("/{run_id}/logs/stream")
 async def stream_run_log(
     run_id: int,
@@ -1197,6 +1241,11 @@ async def stream_run_log(
     harness is still running). Works for a run in any state: a pending run
     streams until it starts producing output, a finished run gets one event
     with the final state and the stream closes immediately.
+
+    Kept for deployments where long-lived streaming connections actually
+    survive the path from client to app — NOT this app's own staging
+    deployment as currently configured (see `GET /{run_id}/logs` above,
+    which is what FE should actually use here).
 
     Open to any authenticated user — not scoped to the caller's own runs,
     same as `GET /{run_id}` itself. Accepts the auth token via `?token=`
@@ -1212,26 +1261,15 @@ async def stream_run_log(
     async def event_gen():
         last_payload = None
         while True:
-            run = db.runs.find_one(
-                {"_id": run_id},
-                {"raw_log": 1, "status": 1, "deliverables_done": 1, "deliverables_expected": 1, "error_message": 1},
-            )
-            if run is None:
+            snapshot = _run_log_snapshot(db, run_id, user)
+            if snapshot is None:
                 yield "event: error\ndata: run not found\n\n"
                 return
-            payload = json.dumps(
-                {
-                    "status": run.get("status"),
-                    "raw_log": run.get("raw_log", ""),
-                    "deliverables_done": run.get("deliverables_done", 0),
-                    "deliverables_expected": run.get("deliverables_expected", 0),
-                    "error_message": _public_error_message(run, user),
-                }
-            )
+            payload = json.dumps(snapshot)
             if payload != last_payload:
                 yield f"data: {payload}\n\n"
                 last_payload = payload
-            if run.get("status") in ("done", "error", "stopped"):
+            if snapshot["status"] in ("done", "error", "stopped"):
                 return
             await asyncio.sleep(LOG_STREAM_POLL_SECONDS)
 

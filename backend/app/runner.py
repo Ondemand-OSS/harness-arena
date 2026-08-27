@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import datetime as dt
 import os
 import shutil
@@ -364,19 +365,6 @@ async def _execute_one(run_id: int, task_id: str, harness_key: str, provider: Pr
         try:
             await _execute_one_leased(db, run_id, task_id, harness_key, provider)
         except Exception as exc:
-            # `_execute_one_leased`'s own inner try/except already turns an
-            # adapter-level crash into a normal `error_message` on the run.
-            # Anything that reaches HERE is a bug in the arena itself (a bad
-            # query, a KeyError, ...), not a harness/model failure — and
-            # since trigger_run no longer awaits execution (see start_runs),
-            # there is no HTTP request left for it to surface as a 500.
-            # Record it on the run immediately rather than leaving the row
-            # exactly as it was and letting the periodic reconciler's
-            # generic stale-lease message stand in for it a minute+ later.
-            # `error_message` is masked to "Run failed." for anyone who
-            # isn't the admin by routers/runs.py's `_public_error_message`,
-            # same as every other error path here — this detail is
-            # admin-only, visible on the run itself where it's needed.
             log.error("run %s crashed outside adapter handling: %r", run_id, exc, exc_info=True)
             log_error(db, action="RUN_EXECUTION", message=f"run {run_id} crashed outside adapter handling", error=exc, metadata={"run_id": run_id, "task_id": task_id, "harness_key": harness_key})
             try:
@@ -402,6 +390,17 @@ async def _execute_one_leased(
     duration (see `_execute_one`) — including the time spent queued on
     `_run_slots`, so a run waiting for a free execution slot is never
     mistaken for an abandoned one."""
+    # `provider` is the SAME object for every harness in a battle (shared by
+    # `prepare_runs`/`execute_prepared_runs`, which run every harness of a
+    # battle concurrently via asyncio.gather over one ProviderSettings
+    # instance). The callback fields set below are inherently per-run, so
+    # mutating the shared instance directly would let concurrently-running
+    # harnesses stomp on each other's callbacks — whichever harness's
+    # assignment runs last would silently receive every other harness's
+    # live log chunks for the rest of the battle. A shallow per-run copy
+    # keeps everything else (model/base_url/api_key/...) shared as before,
+    # while giving each harness its own place to hang its own callbacks.
+    provider = dataclasses.replace(provider)
     workdir = tempfile.mkdtemp(prefix=f"harness-run-{run_id}-")
 
     def stop_requested() -> bool:
