@@ -132,6 +132,12 @@ class OpenClawAdapter:
 
             command = [
                 OPENCLAW_BIN,
+                # `--verbose on` below persists the agent's session
+                # verbosity, but it does not raise OpenClaw's process log
+                # level. The default `info` level only shows the sparse
+                # provider-transport lines; use debug so the raw run log
+                # contains the useful gateway/model diagnostics too.
+                "--log-level", "debug",
                 "agent", "--local",
                 "--message-file", prompt_path,
                 "--session-key", f"arena-{uuid.uuid4().hex}",
@@ -141,6 +147,14 @@ class OpenClawAdapter:
                 # operation; this is a backstop, not the primary driver.
                 "--timeout", str(int(TIMEOUT_SECONDS) + 60),
                 "--json",
+                # Without this, live output during the run was just a
+                # couple of [model-fetch] transport lines, with the actual
+                # result only appearing once the process exits. "full" is
+                # documented at docs.openclaw.ai/tools/agent-send as "on|
+                # full|off" with full also logging tool output — the
+                # installed CLI's own --help text is stale and only lists
+                # on/off, but the binary accepts "full" fine.
+                "--verbose", "full",
             ]
             if provider.reasoning_effort:
                 command += ["--thinking", provider.reasoning_effort]
@@ -148,6 +162,18 @@ class OpenClawAdapter:
             env = os.environ.copy()
             env["OPENCLAW_STATE_DIR"] = state_dir
             env["OPENCLAW_CONFIG_PATH"] = config_path
+            # Confirmed via docs.openclaw.ai/logging (fetched directly, not
+            # taken from a third-party summary): these emit request
+            # start/response, first-streaming-event, and stream-completion
+            # diagnostics at info level. "tools" surfaces which tools are
+            # exposed to the model, useful for an agent-harness comparison.
+            # Deliberately NOT using OPENCLAW_DEBUG_MODEL_PAYLOAD=full-redacted
+            # — its own docs warn it may still contain prompt/message text,
+            # which conflicts with this codebase's secret-scrubbing discipline
+            # everywhere else (see _scrub above).
+            env["OPENCLAW_DEBUG_MODEL_TRANSPORT"] = "1"
+            env["OPENCLAW_DEBUG_MODEL_PAYLOAD"] = "tools"
+            env["OPENCLAW_DEBUG_SSE"] = "events"
             # Defense in depth: OpenClaw's npm-installed bin has a
             # `#!/usr/bin/env node` shebang, which re-resolves `node` from
             # PATH at *runtime*, not from wherever it was installed. The
@@ -159,6 +185,10 @@ class OpenClawAdapter:
             # anywhere that directory doesn't exist (e.g. local dev).
             if os.path.isdir(_NODE22_BIN):
                 env["PATH"] = f"{_NODE22_BIN}{os.pathsep}{env.get('PATH', '')}"
+            # OpenClaw honours this environment override as well as the
+            # global CLI flag. Keeping both makes the intended diagnostic
+            # level explicit even if a wrapper reorders CLI arguments.
+            env["OPENCLAW_LOG_LEVEL"] = "debug"
 
             before = snapshot(workdir)
             expected = parse_deliverables(getattr(task, "expected_deliverables", ""))
@@ -238,7 +268,11 @@ class OpenClawAdapter:
             return RunResult(
                 ok=True,
                 deliverables=deliverables,
-                raw_log=stdout_text[-4000:],
+                # OpenClaw sends its structured diagnostics to stderr while
+                # its final `--json` response is stdout. Retaining both is
+                # essential: keeping stdout alone made successful runs look
+                # as if they contained only a terse final result.
+                raw_log=(stdout_text + "\n" + stderr_text)[-4000:],
             )
         finally:
             shutil.rmtree(state_dir, ignore_errors=True)

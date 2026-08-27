@@ -85,7 +85,16 @@ class HermesAdapter:
                 HERMES_BIN,
                 "chat",
                 "--query-file", "-",
-                "--quiet",
+                # Was --quiet: per hermes's own docs that "suppress[es]
+                # banner, spinner, and tool previews — only output the
+                # final response and session info", which is exactly why
+                # the live-log view (see runner.py's persist_live_log) saw
+                # nothing but one startup line for the whole run. Nothing
+                # here parses stdout's exact shape (see stdout_text below —
+                # only ever used as a raw text tail, never structured), so
+                # trading quiet's terseness for --verbose's tool-activity
+                # detail costs nothing correctness-wise.
+                "--verbose",
                 "--yolo",
                 "--ignore-rules",
             ]
