@@ -668,12 +668,27 @@ async def _stream_query(
                             # recognize, so an unknown-but-real event is
                             # still visible as "something happened" while a
                             # heartbeat doesn't spam the live view.
+                            def _field(container, key):
+                                # `event.get("thinking")` etc. isn't
+                                # guaranteed to be a dict on every event
+                                # shape OnDemand sends — a non-empty list
+                                # there would crash `.get()` outright
+                                # ('list' object has no attribute 'get',
+                                # seen for real on a live run). `or {}`
+                                # alone doesn't guard against that, since a
+                                # non-empty list is truthy.
+                                return container.get(key) if isinstance(container, dict) else None
+
+                            thinking = event.get("thinking")
+                            output = event.get("output")
+                            status_log = event.get("currentStatusLog")
+                            data = event.get("data")
                             text = (
-                                (event.get("thinking") or {}).get("delta")
-                                or (event.get("output") or {}).get("delta")
-                                or (event.get("currentStatusLog") or {}).get("statusMessage")
-                                or (event.get("data") or {}).get("content")
-                                or (event.get("data") or {}).get("delta")
+                                _field(thinking, "delta")
+                                or _field(output, "delta")
+                                or _field(status_log, "statusMessage")
+                                or _field(data, "content")
+                                or _field(data, "delta")
                             )
                             if isinstance(text, str) and text:
                                 log_callback(_scrub(text, secret))
