@@ -115,7 +115,7 @@ def create_custom_harness(body: CustomHarnessIn, db: Database = Depends(get_db),
         "created_at": dt.datetime.now(dt.timezone.utc),
     }
     db.custom_harnesses.insert_one(doc)
-    cache_invalidate("harnesses", "stats", "leaderboard")
+    cache_invalidate("harnesses", "stats", "leaderboard", "runs_board")
     # auth_token is a credential — only whether one was set, never its value.
     log_activity(
         db,
@@ -143,7 +143,7 @@ def update_custom_harness(key: str, body: CustomHarnessIn, db: Database = Depend
     if body.auth_token:  # blank in the PUT body means "keep the existing token"
         update["auth_token"] = body.auth_token
     db.custom_harnesses.update_one({"_id": key}, {"$set": update})
-    cache_invalidate("harnesses", "stats", "leaderboard")
+    cache_invalidate("harnesses", "stats", "leaderboard", "runs_board")
     log_activity(
         db,
         action="CUSTOM_HARNESS_UPDATE",
@@ -160,7 +160,7 @@ def delete_custom_harness(key: str, db: Database = Depends(get_db), user: dict =
     result = db.custom_harnesses.delete_one({"_id": key})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="custom harness not found")
-    cache_invalidate("harnesses", "stats", "leaderboard")
+    cache_invalidate("harnesses", "stats", "leaderboard", "runs_board")
     log_activity(
         db,
         action="CUSTOM_HARNESS_DELETE",

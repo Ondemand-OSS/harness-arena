@@ -134,6 +134,7 @@ def cache_status():
             "GET /api/harnesses",
             "GET /api/leaderboard",
             "GET /api/leaderboard/harness/{harness_key}",
+            "GET /api/runs/board",
         ],
         "how_to_verify": "Call one cached API twice. The second response has X-Arena-Cache: HIT and X-Arena-Cache-Message: response fetched from Redis.",
     }
