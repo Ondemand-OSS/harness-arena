@@ -968,9 +968,16 @@ def runs_board(
     # instances (that coercion normally happens via FastAPI's response_model
     # when the route runs through HTTP, which calling the function directly
     # skips) — normalize both cases the same way here.
-    raw_tasks = _list_tasks_for_board(Response(), category=category, group=group, include_deleted=include_deleted, page=1, limit=None, db=db, user=user)
+    raw_tasks = _list_tasks_for_board(Response(), category=category, group=group, include_deleted=include_deleted, page=1, limit=None, lean=True, db=db, user=user)
     tasks = [t if isinstance(t, TaskOut) else TaskOut.model_validate(t) for t in raw_tasks]
-    overviews = _build_overviews([t.id_aa for t in tasks], db, user)
+    # A task with zero runs is guaranteed to end up "Not run" and get
+    # filtered out below — skip _build_overviews' full deliverables/
+    # scores/verdicts pipeline for it entirely rather than run it just to
+    # discard the result. This one cheap distinct() is the only query that
+    # touches every candidate task; the rest only run for ones with runs.
+    all_task_ids = [t.id_aa for t in tasks]
+    task_ids_with_runs = set(db.runs.distinct("task_id", {"task_id": {"$in": all_task_ids}, "is_deleted": {"$ne": True}}))
+    overviews = _build_overviews([tid for tid in all_task_ids if tid in task_ids_with_runs], db, user)
     harness_names = {key: adapter.name for key, adapter in all_adapters(db).items()}
 
     rows: list[BoardRowOut] = []

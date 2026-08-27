@@ -71,7 +71,7 @@ def harness_battles(key: str, db: Database = Depends(get_db), user: dict | None 
     from .runs import _build_overviews
     from .tasks import list_tasks as _list_tasks_for_battles
 
-    raw_tasks = _list_tasks_for_battles(Response(), db=db, user=user)
+    raw_tasks = _list_tasks_for_battles(Response(), lean=True, db=db, user=user)
     tasks = [t if isinstance(t, TaskOut) else TaskOut.model_validate(t) for t in raw_tasks]
     overviews = _build_overviews([t.id_aa for t in tasks], db, user)
 
