@@ -17,10 +17,12 @@ If you've used Chatbot Arena to compare *models*, this is the same idea one laye
 ## Contents
 
 - [Why Harness Arena?](#why-harness-arena)
+- [How a run works](#how-a-run-works)
 - [Supported harnesses](#supported-harnesses)
 - [Architecture](#architecture)
 - [Features](#features)
 - [Quick start](#quick-start)
+- [Dataset format](#dataset-format)
 - [Configuration](#configuration)
 - [Deployment](#deployment)
 - [Add a harness](#add-a-harness)
@@ -36,6 +38,15 @@ The model is only one part of an agentic workflow. The harness — the CLI, tool
 - **Blind before judged** — outputs are shown as anonymous "Response A/B/C…" until a score is submitted. Identities reveal only afterward, so nobody's judgment is anchored by which tool they *expect* to win.
 - **One vote per person per task** — every signed-in user judges a task once; the public leaderboard aggregates every submitted verdict, not just an admin's.
 - **Elo, recomputed, never stored as truth** — ratings are derived fresh from the full score history on every read, so a correction or a re-score can never leave a stale number on the board.
+
+## How a run works
+
+1. A task (prompt, rubric, expected deliverables) is picked from an imported dataset.
+2. Every selected harness runs it independently, same model and provider config, each in its own workdir — no harness can see another's output or in-progress work.
+3. Each harness's produced files are collected as its deliverables once it finishes.
+4. A judge opens the task and sees every harness's output labeled anonymously ("Response A/B/C…"), in an order seeded by task id rather than harness identity.
+5. The judge scores every deliverable. Only on submission are harness identities revealed — never before, so nothing about which tool is which can bias the score.
+6. The verdict is stored and folded into the Elo leaderboard, which is recomputed from the full score history rather than incrementally patched.
 
 ## Supported harnesses
 
@@ -92,6 +103,8 @@ uvicorn app.main:app --reload --port 8420
 
 Set `MONGODB_URI` in `backend/.env` before starting the service. Keep `.env` files and real credentials out of Git.
 
+Once it's running, open `http://127.0.0.1:8420/docs` for interactive Swagger UI over the full API — dataset import, run orchestration, scoring, the leaderboard — no extra setup, it ships with FastAPI.
+
 Install the local CLI tools you want to benchmark, for example:
 
 ```bash
@@ -99,6 +112,21 @@ npm install -g @anthropic-ai/claude-code @openai/codex
 ```
 
 This service is the API and orchestration layer — the endpoints above are enough to run tasks against directly. Judging blind and browsing the leaderboard visually needs a frontend pointed at this backend's `/api`.
+
+## Dataset format
+
+Tasks are imported from an `.xlsx` workbook with one `Tasks` sheet:
+
+| Column | Meaning |
+|---|---|
+| `id_aa` | Stable task id — re-importing the same id upserts that task |
+| `title` | Shown to judges |
+| `category` | Grouping shown on the leaderboard and task browser |
+| `prompt` | What every harness is actually given |
+| `system_prompt` | Optional system-level framing |
+| `rubric` | Judging guidance shown alongside the task |
+| `expected_deliverables` | Comma-separated filenames, up to 20 per task |
+| `reference_files` | Comma-separated filenames of supplementary source material handed to every harness alongside the prompt |
 
 ## Configuration
 
