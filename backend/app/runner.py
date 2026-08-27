@@ -413,6 +413,7 @@ async def _execute_one_leased(
             {"_id": run_id},
             {"$set": {"status": "stopped", "finished_at": _utcnow(), "error_message": "Stopped by arena admin.", "is_retrying": False}},
         )
+        cache_invalidate("runs_board")
 
     try:
         task_doc = db.tasks.find_one({"_id": task_id})
@@ -536,6 +537,7 @@ async def _execute_one_leased(
                 {"_id": run_id},
                 {"$set": {"status": "error", "error_message": crash_message, "finished_at": _utcnow(), "is_retrying": False}},
             )
+            cache_invalidate("runs_board")
             return
 
         # A truncated tail of adapter output, kept per-run so the admin can
@@ -575,6 +577,7 @@ async def _execute_one_leased(
                     }
                 },
             )
+            cache_invalidate("runs_board")
             return
 
         written_count = 0
@@ -617,6 +620,7 @@ async def _execute_one_leased(
                     }
                 },
             )
+            cache_invalidate("runs_board")
             return
 
         # A harness that deployed the app itself (OnDemand for web tasks)
@@ -661,7 +665,7 @@ async def _execute_one_leased(
                 }
             },
         )
-        cache_invalidate("stats", "leaderboard")
+        cache_invalidate("stats", "leaderboard", "runs_board")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -786,6 +790,7 @@ def prepare_runs(
         run_ids.append(run_id)
         to_execute.append((run_id, harness_key))
 
+    cache_invalidate("runs_board")
     return run_ids, to_execute, provider
 
 

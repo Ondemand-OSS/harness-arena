@@ -247,7 +247,7 @@ def approve_category_review(
         {"_id": review_key},
         {"$set": {"status": "approved", "group": body.group, "approved_at": dt.datetime.now(dt.timezone.utc)}},
     )
-    cache_invalidate("tasks")
+    cache_invalidate("tasks", "runs_board")
     log_activity(
         db,
         action="CATEGORY_REVIEW_APPROVE",
@@ -363,7 +363,7 @@ def delete_task_results(task_id: str, db: Database = Depends(get_db), admin: dic
         raise HTTPException(status_code=404, detail="task not found")
     _ensure_not_running(db, task_id)
     _delete_results(db, task_id)
-    cache_invalidate("tasks", "stats", "leaderboard")
+    cache_invalidate("tasks", "stats", "leaderboard", "runs_board")
     log_activity(
         db,
         action="TASK_RESULTS_DELETE",
@@ -381,7 +381,7 @@ def delete_task(task_id: str, db: Database = Depends(get_db), admin: dict = Depe
     _ensure_not_running(db, task_id)
     _delete_results(db, task_id)
     db.tasks.update_one({"_id": task_id}, {"$set": {"is_deleted": True}})
-    cache_invalidate("tasks", "stats", "leaderboard")
+    cache_invalidate("tasks", "stats", "leaderboard", "runs_board")
     log_activity(
         db,
         action="TASK_DELETE",
@@ -404,7 +404,7 @@ def restore_task(task_id: str, db: Database = Depends(get_db), admin: dict = Dep
     db.runs.update_many({"task_id": task_id}, {"$set": {"is_deleted": False}, "$unset": {"deleted_at": ""}})
     db.scores.update_many({"task_id": task_id}, {"$set": {"is_deleted": False}, "$unset": {"deleted_at": ""}})
     db.judge_verdicts.update_many({"task_id": task_id}, {"$set": {"is_deleted": False}, "$unset": {"deleted_at": ""}})
-    cache_invalidate("tasks", "stats", "leaderboard")
+    cache_invalidate("tasks", "stats", "leaderboard", "runs_board")
     log_activity(
         db,
         action="TASK_RESTORE",
@@ -583,7 +583,7 @@ def import_default_dataset(db: Database = Depends(get_db), user: dict | None = D
         count, new_task_ids, skipped_existing_ids = import_xlsx(DEFAULT_DATASET_PATH, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    cache_invalidate("tasks", "stats", "leaderboard")
+    cache_invalidate("tasks", "stats", "leaderboard", "runs_board")
     # `current_user` is for attribution only — this endpoint has never
     # required auth, so it stays callable unauthenticated (user_id None).
     log_activity(
@@ -638,7 +638,7 @@ async def import_dataset(file: UploadFile = File(...), db: Database = Depends(ge
         raise HTTPException(status_code=400, detail=str(exc))
     finally:
         os.unlink(tmp_path)
-    cache_invalidate("tasks", "stats", "leaderboard")
+    cache_invalidate("tasks", "stats", "leaderboard", "runs_board")
     log_activity(
         db,
         action="DATASET_IMPORT",
