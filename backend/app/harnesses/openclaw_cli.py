@@ -173,7 +173,13 @@ class OpenClawAdapter:
             # everywhere else (see _scrub above).
             env["OPENCLAW_DEBUG_MODEL_TRANSPORT"] = "1"
             env["OPENCLAW_DEBUG_MODEL_PAYLOAD"] = "tools"
-            env["OPENCLAW_DEBUG_SSE"] = "events"
+            # "peek" (vs "events") additionally logs the first five
+            # redacted, size-capped SSE payloads — real event content, not
+            # just first-event/completion timing. Bounded by design (5
+            # events, redacted, capped), so no unredacted-secret or
+            # unbounded-output risk beyond what the flag already accounts
+            # for on OpenClaw's side.
+            env["OPENCLAW_DEBUG_SSE"] = "peek"
             # Defense in depth: OpenClaw's npm-installed bin has a
             # `#!/usr/bin/env node` shebang, which re-resolves `node` from
             # PATH at *runtime*, not from wherever it was installed. The

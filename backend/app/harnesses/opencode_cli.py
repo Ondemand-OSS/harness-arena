@@ -34,6 +34,21 @@ def _scrub(text: str, *secrets: str) -> str:
     return text
 
 
+def _live_text_for_event(event: dict) -> str | None:
+    """Pull the human-readable part out of one `--format json` event for
+    the LIVE view — verified against a real run: a "text" event's actual
+    assistant text lives at part.text; step_start/step_finish and anything
+    else carry no prose (tokens/cost/session metadata only), so the caller
+    falls back to a bare event-type breadcrumb for those."""
+    if event.get("type") == "text":
+        part = event.get("part")
+        if isinstance(part, dict):
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                return text
+    return None
+
+
 class OpenCodeAdapter:
     key = "opencode"
     name = "opencode"
@@ -115,9 +130,35 @@ class OpenCodeAdapter:
         before = snapshot(workdir)
         expected = parse_deliverables(getattr(task, "expected_deliverables", ""))
 
+        # stdout carries `--format json` events (one per line); stderr
+        # carries `--print-logs` diagnostic lines (plain key=value text,
+        # not JSON) — both flow through this same callback. A JSON line
+        # gets its actual assistant text extracted (see
+        # _live_text_for_event); anything that isn't JSON, or is JSON with
+        # no text (step_start/step_finish/...), is forwarded as-is so the
+        # diagnostic lines and event-type breadcrumbs both stay visible.
+        _live_buffer = ""
+
         def _live_output(chunk: str) -> None:
-            if provider.live_log_callback:
-                provider.live_log_callback(_scrub(chunk, provider.api_key))
+            nonlocal _live_buffer
+            if not provider.live_log_callback:
+                return
+            _live_buffer += chunk
+            lines = _live_buffer.split("\n")
+            _live_buffer = lines.pop()  # last (possibly partial) line stays buffered
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    provider.live_log_callback(_scrub(line, provider.api_key) + "\n")
+                    continue
+                text = _live_text_for_event(event) if isinstance(event, dict) else None
+                if text is not None:
+                    provider.live_log_callback(_scrub(text, provider.api_key) + "\n")
+                else:
+                    provider.live_log_callback(_scrub(line, provider.api_key) + "\n")
 
         try:
             proc = await asyncio.create_subprocess_exec(
