@@ -1,0 +1,9 @@
+# Reference only — provider profiles are actually created at runtime
+# through the Setup page (POST /api/config) and stored in MongoDB, not
+# read from this file. This documents the shape for anyone scripting
+# against the API directly.
+name: "your profile name"
+model: "your-model-id"
+base_url: "https://api.your-openai-compatible-provider.com/v1"
+api_key: "sk-..."   # never commit a real key
+make_active: true

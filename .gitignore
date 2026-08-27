@@ -1,0 +1,67 @@
+# Local/private benchmark material. It can contain confidential datasets,
+# generated deliverables, judge results, and reference reports.
+/extras/
+
+
+# Environment files and credentials (keep checked-in examples only).
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*service-account*.json
+
+# Python caches, virtual environments, and tooling output.
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+backend/venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local runtime state and logs.
+*.db
+*.sqlite
+*.sqlite3
+backend/runs/
+*.log
+*.out
+*.pid
+
+# Just in case any Node tooling ever runs in this repo — the frontend
+# itself now lives in its own repo, github.com/shrey2003/harness-arena-fe.
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors, OS metadata, and local agent/session state.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+/.agents/
+/.codex/
+
+# Scratch exports and temporary files.
+*.tmp
+*.temp
+*.bak
+tmp/
+temp/

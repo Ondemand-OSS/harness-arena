@@ -1,0 +1,7 @@
+.git
+backend/arena.db
+backend/runs/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+.venv/

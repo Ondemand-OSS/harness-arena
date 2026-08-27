@@ -1,0 +1,121 @@
+openapi: 3.0.0
+info:
+  title: Internet Agent API
+  description: |
+    The Internet Agent API allows users to search the web and retrieve summarized, relevant information.
+    It fetches search results, scrapes useful content from top-ranked pages, and returns structured quick answers (if available)
+    and clean page summaries. This is useful for question answering, summarization, and real-time knowledge lookup.
+  version: 1.0.0
+servers:
+  - url: https://serverless.on-demand.io/apps/commoditiesapi
+    description: Production server
+paths:
+  /internet-agent:
+    post:
+      operationId: fetchInternetData
+      summary: Fetch search results and extract web content
+      description: |
+        This endpoint takes a natural language search query, performs a web search, and retrieves the top-ranked results.
+        It extracts and summarizes content from the resulting web pages, including structured quick answers (if available) and 
+        concise excerpts limited to approximately 300 words per page. It is designed to provide up-to-date information from the web, 
+        such as weather updates, news articles, current events, or general knowledge queries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: |
+                    The search word, phrase, or question used to retrieve relevant web data. This should be a natural language query 
+                    similar to what you would type into a search engine. Keep the query short and focused to improve result 
+                    relevance and response quality.
+              required:
+                - query
+      responses:
+        "200":
+          description: Successfully retrieved search results with extracted content.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quickAnswer:
+                    type: object
+                    nullable: true
+                    description: A quick answer from a web-based answer box, if available.
+                    properties:
+                      title:
+                        type: string
+                        description: Title of the quick answer.
+                      answer:
+                        type: string
+                        description: The brief answer to the query.
+                      source:
+                        type: string
+                        description: Source of the quick answer.
+                      sourceLink:
+                        type: string
+                        format: uri
+                        description: URL of the quick answer source.
+                  searchResults:
+                    type: array
+                    description: List of organic search results with extracted page excerpts.
+                    items:
+                      type: object
+                      properties:
+                        title:
+                          type: string
+                          description: Title of the search result.
+                        link:
+                          type: string
+                          format: uri
+                          description: URL of the search result.
+                        snippet:
+                          type: string
+                          description: Short preview text from the search result.
+                        position:
+                          type: integer
+                          description: The position of the search result in the list.
+                        pageExcerpt:
+                          type: string
+                          description: Processed content extracted from the webpage, limited to ~300 words.
+                        sitelinks:
+                          type: array
+                          nullable: true
+                          description: Optional sub-links related to the search result.
+                          items:
+                            type: object
+                            properties:
+                              title:
+                                type: string
+                                description: Title of the sitelink.
+                              link:
+                                type: string
+                                format: uri
+                                description: URL of the sitelink.
+                        attributes:
+                          type: object
+                          description: Additional attributes for the search result (e.g., metadata).
+                          additionalProperties:
+                            type: string
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    description: Error type.
+                  message:
+                    type: string
+                    description: Detailed error message.
+                  sourcesWithContent:
+                    type: array
+                    description: Empty or partial array of results in case of failure.
+                    items:
+                      type: object
