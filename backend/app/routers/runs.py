@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from pydantic import BaseModel
 from pymongo.database import Database
 
+from ..cache import get_json as cache_get, invalidate as cache_invalidate, mark_response as cache_mark, set_json as cache_set
 from ..db import get_db
 from ..logger import log_activity
 from ..public_errors import rate_limit_message
@@ -160,8 +161,9 @@ def _display_model(run: dict, db: Database, ondemand_labels: dict[int, str] | No
     """Never expose OnDemand's technical endpoint id in arena UI data."""
     if run.get("harness_key") == "ondemand" and run.get("ondemand_model_id") is not None:
         model_id = run["ondemand_model_id"]
-        label = (ondemand_labels or {}).get(model_id)
-        if label is None:
+        if ondemand_labels is not None:
+            label = ondemand_labels.get(model_id)
+        else:
             doc = db.ondemand_models.find_one({"_id": model_id}, {"label": 1})
             label = (doc or {}).get("label")
         if label:
@@ -179,6 +181,7 @@ def _run_out(
     already_scored: float | None = None,
     community_avg_score: float | None = None,
     community_vote_count: int = 0,
+    ondemand_labels: dict[int, str] | None = None,
 ) -> RunOut:
     """`deliverables`/`submitted_by` let a caller that already bulk-fetched
     this data (see runs_overview below) skip the two per-run Mongo queries
@@ -209,7 +212,7 @@ def _run_out(
         task_id=run["task_id"],
         harness_key=run["harness_key"],
         provider_config_id=run.get("provider_config_id"),
-        model=_display_model(run, db),
+        model=_display_model(run, db, ondemand_labels),
         status=run["status"],
         started_at=run.get("started_at"),
         finished_at=run.get("finished_at"),
@@ -335,6 +338,7 @@ async def retry_run(run_id: int, db: Database = Depends(get_db), user: dict = De
             "$inc": {"retry_count": 1},
         },
     )
+    cache_invalidate("runs_board")
     fresh = db.runs.find_one({"_id": run_id})
     log_activity(
         db,
@@ -396,6 +400,7 @@ def delete_round(round_id: str, db: Database = Depends(get_db), admin: dict = De
         {"run_id": {"$in": run_ids}},
         {"$set": {"is_deleted": True, "deleted_at": archived_at}},
     )
+    cache_invalidate("runs_board", "stats", "leaderboard")
     log_activity(
         db,
         action="ROUND_DELETE",
@@ -422,6 +427,7 @@ def delete_failed_run(run_id: int, db: Database = Depends(get_db), admin: dict =
     archived_at = dt.datetime.now(dt.timezone.utc)
     db.runs.update_one({"_id": run_id}, {"$set": {"is_deleted": True, "deleted_at": archived_at}})
     db.deliverables.update_many({"run_id": run_id}, {"$set": {"is_deleted": True, "deleted_at": archived_at}})
+    cache_invalidate("runs_board", "stats", "leaderboard")
     log_activity(
         db,
         action="RUN_DELETE",
@@ -610,7 +616,9 @@ def runs_overview(
     return list(_build_overviews(task_ids, db, user).values())
 
 
-def _build_overviews(task_ids: list[str], db: Database, user: dict | None) -> dict[str, TaskOverviewOut]:
+def _build_overviews(
+    task_ids: list[str], db: Database, user: dict | None, *, adapters: dict | None = None
+) -> dict[str, TaskOverviewOut]:
     """Shared core of POST /api/runs/overview and GET /api/runs/board —
     everything below used to live directly in runs_overview; pulled out so
     the board endpoint can reuse it instead of re-running the same bulk
@@ -626,6 +634,20 @@ def _build_overviews(task_ids: list[str], db: Database, user: dict | None) -> di
     for run in db.runs.find({"task_id": {"$in": task_ids}, "is_deleted": {"$ne": True}}).sort("_id", -1):
         runs_by_task[run["task_id"]].append(run)
         all_run_ids.append(run["_id"])
+
+    ondemand_ids = list(
+        {
+            run["ondemand_model_id"]
+            for runs in runs_by_task.values()
+            for run in runs
+            if run.get("harness_key") == "ondemand" and run.get("ondemand_model_id") is not None
+        }
+    )
+    ondemand_labels = (
+        {doc["_id"]: doc.get("label") for doc in db.ondemand_models.find({"_id": {"$in": ondemand_ids}}, {"label": 1})}
+        if ondemand_ids
+        else {}
+    )
 
     # One query for every deliverable of every one of those runs.
     deliverables_by_run: dict[int, list[DeliverableOut]] = defaultdict(list)
@@ -677,7 +699,8 @@ def _build_overviews(task_ids: list[str], db: Database, user: dict | None) -> di
     for v in db.judge_verdicts.find({"task_id": {"$in": task_ids}, "is_deleted": {"$ne": True}}):
         verdicts_by_task[v["task_id"]][v["harness_key"]] = v
 
-    adapters = all_adapters(db)
+    if adapters is None:
+        adapters = all_adapters(db)
 
     out: dict[str, TaskOverviewOut] = {}
     for task_id in task_ids:
@@ -715,6 +738,7 @@ def _build_overviews(task_ids: list[str], db: Database, user: dict | None) -> di
                 already_scored=my_score_by_key.get(key),
                 community_avg_score=round(sum(votes) / len(votes), 2) if votes else None,
                 community_vote_count=len(votes),
+                ondemand_labels=ondemand_labels,
             )
 
         resolved_profile = _resolve_ever_done_provider_config_id(current_asc, task_runs)
@@ -791,10 +815,11 @@ def _build_overviews(task_ids: list[str], db: Database, user: dict | None) -> di
         else:
             compare_out = CompareOut(task_id=task_id, revealed=False, entries=[])
 
+        run_outs = {run["_id"]: out_for(run) for run in task_runs}
         out[task_id] = TaskOverviewOut(
             task_id=task_id,
-            runs=[out_for(r) for r in current_asc],
-            history=[out_for(r) for r in task_runs],
+            runs=[run_outs[r["_id"]] for r in current_asc],
+            history=[run_outs[r["_id"]] for r in task_runs],
             compare=compare_out,
         )
     return out
@@ -827,10 +852,117 @@ def _resolve_row_status(*, running: bool, queued: bool, retrying: bool, done_cou
     return "Judged" if judged else not_judged_status
 
 
+_DT_MIN = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+_BOARD_CACHE_TTL_SECONDS = 45
+_BOARD_INDEX_RUN_FIELDS = {
+    "_id": 1,
+    "task_id": 1,
+    "harness_key": 1,
+    "round_id": 1,
+    "status": 1,
+    "started_at": 1,
+    "finished_at": 1,
+    "is_retrying": 1,
+    "provider_config_id": 1,
+}
+
+
 def _latest_run_at(runs: list[RunOut]) -> dt.datetime | None:
     timestamps = [r.finished_at or r.started_at for r in runs]
     timestamps = [t for t in timestamps if t is not None]
     return max(timestamps) if timestamps else None
+
+
+def _round_key(run: dict) -> str:
+    return str(run["round_id"]) if run.get("round_id") is not None else f"run-{run['_id']}"
+
+
+def _parse_cached_dt(value) -> dt.datetime | None:
+    if value is None or isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, str):
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return None
+
+
+def _build_board_index(task_ids: list[str], db: Database) -> list[dict]:
+    """Cheap per-round rows used to filter/sort/paginate BEFORE the full
+    overview pipeline. Status/outcome still overlay the viewer's scores
+    in `runs_board`; this only carries run grouping + community votes."""
+    if not task_ids:
+        return []
+    runs_by_task: dict[str, list[dict]] = defaultdict(list)
+    for run in db.runs.find(
+        {"task_id": {"$in": task_ids}, "is_deleted": {"$ne": True}},
+        _BOARD_INDEX_RUN_FIELDS,
+    ).sort("_id", -1):
+        runs_by_task[run["task_id"]].append(run)
+    if not runs_by_task:
+        return []
+
+    community_counts: dict[str, dict[tuple, int]] = defaultdict(lambda: defaultdict(int))
+    for score in db.scores.find(
+        {"task_id": {"$in": list(runs_by_task)}, "is_deleted": {"$ne": True}},
+        {"task_id": 1, "harness_key": 1, "provider_config_id": 1},
+    ):
+        community_counts[score["task_id"]][(score["harness_key"], score.get("provider_config_id"))] += 1
+
+    index: list[dict] = []
+    for task_id, task_runs in runs_by_task.items():
+        grouped: dict[str, list[dict]] = defaultdict(list)
+        for run in task_runs:
+            grouped[_round_key(run)].append(run)
+        counts = community_counts.get(task_id, {})
+        for key, group_runs in grouped.items():
+            sorted_runs = sorted(group_runs, key=lambda r: r["_id"])
+            done_runs = [r for r in sorted_runs if r["status"] == "done"]
+            progress_runs = [r for r in sorted_runs if r["status"] in ("pending", "running")]
+            failed_runs = [r for r in sorted_runs if r["status"] in ("error", "stopped")]
+            done_pairs = [(r["harness_key"], r.get("provider_config_id")) for r in done_runs]
+            timestamps = [r.get("finished_at") or r.get("started_at") for r in sorted_runs]
+            timestamps = [t for t in timestamps if t is not None]
+            index.append(
+                {
+                    "task_id": task_id,
+                    "row_key": f"{task_id}#{key}",
+                    "latest_run_at": max(timestamps) if timestamps else None,
+                    "running": any(r["status"] == "running" for r in progress_runs),
+                    "queued": any(r["status"] == "pending" for r in progress_runs),
+                    "retrying": any(bool(r.get("is_retrying")) for r in progress_runs),
+                    "done_count": len(done_runs),
+                    "has_failed": len(failed_runs) > 0,
+                    "community_judged": any(counts.get(pair, 0) > 0 for pair in done_pairs),
+                    "done_pairs": [list(pair) for pair in done_pairs],
+                }
+            )
+    return index
+
+
+def _index_status(row: dict, my_scores: dict[tuple, float]) -> tuple[str, str | None]:
+    judged_scores = []
+    for pair in row.get("done_pairs") or []:
+        harness_key, profile_id = pair[0], pair[1] if len(pair) > 1 else None
+        score = my_scores.get((row["task_id"], harness_key, profile_id))
+        if score is not None:
+            judged_scores.append(score)
+    judged = bool(judged_scores)
+    not_judged_status = (
+        "Awaiting your judgement" if row.get("community_judged") else "Awaiting community & your judgement"
+    )
+    status = _resolve_row_status(
+        running=bool(row.get("running")),
+        queued=bool(row.get("queued")),
+        retrying=bool(row.get("retrying")),
+        done_count=int(row.get("done_count") or 0),
+        has_failed=bool(row.get("has_failed")),
+        judged=judged,
+        not_judged_status=not_judged_status,
+    )
+    outcome = None
+    if judged and len(judged_scores) >= 2:
+        ranked = sorted(judged_scores, reverse=True)
+        outcome = "Tie" if sum(1 for value in ranked if value == ranked[0]) > 1 else "Decisive"
+    return status, outcome
 
 
 def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None, harness_names: dict[str, str]) -> list[BoardRowOut]:
@@ -933,6 +1065,7 @@ def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None, harnes
 
 @router.get("/board", response_model=RunsBoardOut)
 def runs_board(
+    response: Response,
     category: str | None = None,
     group: str | None = None,
     include_deleted: bool = False,
@@ -961,40 +1094,80 @@ def runs_board(
     page = max(1, page)
     limit = max(1, min(limit, MAX_TASKS_PAGE_LIMIT))
 
-    # Unpaginated on purpose: which round of which task lands on which
-    # page depends on status/outcome/latest_run_at, none of which are
-    # known until overview data is built below — see _board_rows_for_task.
+    admin_viewer = is_admin(user)
+    cacheable = not include_deleted and not admin_viewer
+    viewer_key = "anon" if user is None else f"u:{user['_id']}"
+    page_variant = (
+        f"page:group:{group or ''}:category:{category or ''}:status:{status or ''}:"
+        f"outcome:{outcome or ''}:sort:{sort}:page:{page}:limit:{limit}:viewer:{viewer_key}"
+    )
+    if cacheable:
+        cached = cache_get("runs_board", page_variant)
+        if cached is not None:
+            cache_mark(response, hit=True)
+            return cached
+        cache_mark(response, hit=False)
+    else:
+        cache_mark(response, hit=False)
+
     # A cache hit inside list_tasks returns plain cached dicts, not TaskOut
     # instances (that coercion normally happens via FastAPI's response_model
     # when the route runs through HTTP, which calling the function directly
     # skips) — normalize both cases the same way here.
     raw_tasks = _list_tasks_for_board(Response(), category=category, group=group, include_deleted=include_deleted, page=1, limit=None, lean=True, db=db, user=user)
     tasks = [t if isinstance(t, TaskOut) else TaskOut.model_validate(t) for t in raw_tasks]
-    # A task with zero runs is guaranteed to end up "Not run" and get
-    # filtered out below — skip _build_overviews' full deliverables/
-    # scores/verdicts pipeline for it entirely rather than run it just to
-    # discard the result. This one cheap distinct() is the only query that
-    # touches every candidate task; the rest only run for ones with runs.
-    all_task_ids = [t.id_aa for t in tasks]
-    task_ids_with_runs = set(db.runs.distinct("task_id", {"task_id": {"$in": all_task_ids}, "is_deleted": {"$ne": True}}))
-    overviews = _build_overviews([tid for tid in all_task_ids if tid in task_ids_with_runs], db, user)
-    harness_names = {key: adapter.name for key, adapter in all_adapters(db).items()}
+    task_by_id = {t.id_aa: t for t in tasks}
 
-    rows: list[BoardRowOut] = []
-    for task in tasks:
-        rows.extend(_board_rows_for_task(task, overviews.get(task.id_aa), harness_names))
-    rows = [r for r in rows if r.status != "Not run"]
-    if status:
-        rows = [r for r in rows if r.status == status]
-    if outcome:
-        rows = [r for r in rows if r.outcome == outcome]
+    index_variant = f"index:group:{group or ''}:category:{category or ''}"
+    index = None if include_deleted else cache_get("runs_board", index_variant)
+    if index is not None:
+        for row in index:
+            row["latest_run_at"] = _parse_cached_dt(row.get("latest_run_at"))
+    else:
+        index = _build_board_index([t.id_aa for t in tasks], db)
+        if not include_deleted:
+            cache_set("runs_board", index, variant=index_variant, ttl_seconds=_BOARD_CACHE_TTL_SECONDS)
 
-    rows.sort(key=lambda r: r.row_key)
-    rows.sort(key=lambda r: r.latest_run_at or dt.datetime.min.replace(tzinfo=dt.timezone.utc), reverse=(sort == "desc"))
+    my_scores: dict[tuple, float] = {}
+    if user is not None:
+        for score in db.scores.find(
+            {"user_id": user["_id"], "is_deleted": {"$ne": True}},
+            {"task_id": 1, "harness_key": 1, "provider_config_id": 1, "value": 1},
+        ):
+            my_scores[(score["task_id"], score["harness_key"], score.get("provider_config_id"))] = score["value"]
 
-    total = len(rows)
+    ranked: list[dict] = []
+    for row in index:
+        if row["task_id"] not in task_by_id:
+            continue
+        row_status, row_outcome = _index_status(row, my_scores)
+        if row_status == "Not run":
+            continue
+        if status and row_status != status:
+            continue
+        if outcome and row_outcome != outcome:
+            continue
+        ranked.append(row)
+
+    ranked.sort(key=lambda r: r["row_key"])
+    ranked.sort(key=lambda r: r["latest_run_at"] or _DT_MIN, reverse=(sort == "desc"))
+    total = len(ranked)
     start = (page - 1) * limit
-    return RunsBoardOut(rows=rows[start : start + limit], total=total, page=page, limit=limit)
+    page_index = ranked[start : start + limit]
+    page_task_ids = list(dict.fromkeys(row["task_id"] for row in page_index))
+
+    adapters = all_adapters(db)
+    overviews = _build_overviews(page_task_ids, db, user, adapters=adapters)
+    harness_names = {key: adapter.name for key, adapter in adapters.items()}
+    by_key: dict[str, BoardRowOut] = {}
+    for task_id in page_task_ids:
+        for built in _board_rows_for_task(task_by_id[task_id], overviews.get(task_id), harness_names):
+            by_key[built.row_key] = built
+    rows = [by_key[row["row_key"]] for row in page_index if row["row_key"] in by_key]
+    out = RunsBoardOut(rows=rows, total=total, page=page, limit=limit)
+    if cacheable:
+        cache_set("runs_board", out, variant=page_variant, ttl_seconds=_BOARD_CACHE_TTL_SECONDS)
+    return out
 
 
 @router.get("/{run_id}", response_model=RunOut)

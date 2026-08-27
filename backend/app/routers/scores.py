@@ -403,7 +403,7 @@ def submit_scores(body: ScoreIn, db: Database = Depends(get_db), _user=Depends(r
             db.scores.update_one({"_id": existing["_id"]}, {"$set": {"run_id": run["_id"], "value": value, "deliverable_scores": submitted, "judged_at": now, "is_deleted": False}})
         out.append(doc)
 
-    cache_invalidate("stats", "leaderboard")
+    cache_invalidate("stats", "leaderboard", "runs_board")
     log_activity(
         db,
         action="SCORE_SUBMIT",
@@ -436,7 +436,7 @@ def reset_scores(task_id: str, db: Database = Depends(get_db), admin: dict = Dep
     if db.tasks.find_one({"_id": task_id}, {"_id": 1}) is None:
         raise HTTPException(status_code=404, detail="task not found")
     deleted = db.scores.delete_many({"task_id": task_id}).deleted_count
-    cache_invalidate("stats", "leaderboard")
+    cache_invalidate("stats", "leaderboard", "runs_board")
     # A hard delete with no Restore (see this endpoint's docstring), so the
     # log entry is the only remaining record that it happened.
     log_activity(
