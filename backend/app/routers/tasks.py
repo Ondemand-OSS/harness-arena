@@ -93,8 +93,16 @@ DEFAULT_DATASET_PATH = next(
 )
 
 
+# Multi-paragraph free-text fields a list view never renders (only a task
+# detail/judge screen does) — dropped via Mongo projection when `lean=True`
+# so they never leave the database for a caller that only needs list-view
+# fields. `expected_deliverables` stays: deliverable_files/deliverable_types
+# below are derived from it, even in lean mode.
+_LEAN_EXCLUDED_FIELDS = {"prompt": 0, "system_prompt": 0, "rubric": 0, "reference_files": 0, "dataset_version": 0}
+
+
 @router.get("", response_model=list[TaskOut])
-def list_tasks(response: Response, category: str | None = None, group: str | None = None, include_deleted: bool = False, page: int = 1, limit: int | None = None, db: Database = Depends(get_db), user: dict | None = Depends(current_user)):
+def list_tasks(response: Response, category: str | None = None, group: str | None = None, include_deleted: bool = False, page: int = 1, limit: int | None = None, lean: bool = False, db: Database = Depends(get_db), user: dict | None = Depends(current_user)):
     if include_deleted and not is_admin(user):
         raise HTTPException(status_code=403, detail="only the OnDemand admin can view deleted tasks")
     # `group` is derived (see below), not a stored field, so pagination has
@@ -106,7 +114,10 @@ def list_tasks(response: Response, category: str | None = None, group: str | Non
     if limit is not None:
         page = max(1, page)
         limit = max(1, min(limit, MAX_TASKS_PAGE_LIMIT))
-    cache_variant = json.dumps([category or "", group or "", page if limit is not None else None, limit], separators=(",", ":"))
+    # `lean` has to be part of the cache key too — otherwise a lean response
+    # (missing prompt/rubric/etc.) could get served back to a caller that
+    # asked for the full document, or vice versa.
+    cache_variant = json.dumps([category or "", group or "", page if limit is not None else None, limit, lean], separators=(",", ":"))
     if not include_deleted:
         cached = cache_get("tasks", f"list:{cache_variant}")
         if cached is not None:
@@ -116,7 +127,7 @@ def list_tasks(response: Response, category: str | None = None, group: str | Non
     query = {"category": category} if category else {}
     if not include_deleted:
         query["is_deleted"] = {"$ne": True}
-    tasks = list(db.tasks.find(query).sort("_id", 1))
+    tasks = list(db.tasks.find(query, _LEAN_EXCLUDED_FIELDS if lean else None).sort("_id", 1))
     # One query for the whole page rather than a per-task lookup.
     with_verdicts = {v["task_id"] for v in db.judge_verdicts.find({"is_deleted": {"$ne": True}}, {"task_id": 1})}
     approved_groups = _approved_category_groups(db)
