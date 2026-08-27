@@ -40,7 +40,13 @@ import urllib.parse
 
 from pymongo.database import Database
 
-from .webproject import detect_framework, find_frontend_root, patch_vite_allowed_hosts, safe_relpath
+from .webproject import (
+    detect_framework,
+    find_frontend_root,
+    find_missing_local_imports,
+    patch_vite_allowed_hosts,
+    safe_relpath,
+)
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +83,11 @@ STATUS_FAILED = "failed"
 # (never deployed): the project is fine, its host simply timed out, and
 # the fix is one click rather than an error to interpret.
 STATUS_EXPIRED = "expired"
+# Prefix on a stored deployment.error that marks it as
+# find_missing_local_imports' specific, deterministic reason — routers/deploy.py
+# checks for this to show a precise message instead of the generic one
+# every other (non-deterministic, possibly-transient) failure gets.
+MISSING_FILES_PREFIX = "missing_files:"
 
 
 def deployment_state(deployment: dict | None) -> str:
@@ -220,6 +231,28 @@ def load_run_files(db: Database, run_id: int) -> dict[str, bytes]:
     return files
 
 
+def _format_missing_imports(missing: list[tuple[str, str]]) -> str:
+    """`missing` as `"./styles.css (imported by src/main.jsx), ..."` —
+    shared by undeployable_reason and _deploy's own pre-sandbox check so
+    the two always describe the same failure the same way."""
+    return ", ".join(f"{spec} (imported by {src})" for src, spec in missing[:5])
+
+
+def undeployable_reason(files: dict[str, bytes]) -> str:
+    """Empty when `files` looks deployable; otherwise the raw
+    "spec (imported by file), ..." fragment naming why not — currently
+    just the missing-local-import check, but the one entry point
+    routers/deploy.py's GET /preview calls to decide whether to offer
+    "View website" at all (it wraps this fragment in its own judge-facing
+    sentence — see that module's _missing_files_message). Cheap and
+    synchronous (no sandbox, no network) by design, so it's fine to call
+    on every status poll rather than only right before deploying."""
+    root = find_frontend_root(files)
+    project_files = _subtree(files, root)
+    missing = find_missing_local_imports(project_files)
+    return _format_missing_imports(missing) if missing else ""
+
+
 def _set_deployment(db: Database, run_id: int, **fields) -> None:
     db.runs.update_one(
         {"_id": run_id},
@@ -254,6 +287,18 @@ async def _deploy(db: Database, run_id: int, files: dict[str, bytes]) -> dict:
     project_files = patch_vite_allowed_hosts(_subtree(files, root), framework)
     if not project_files:
         return await fail("could not locate the frontend directory in this project")
+
+    # Checked before a sandbox is ever created (same check GET /preview
+    # already ran to decide whether to offer the button at all — see
+    # undeployable_reason) — a project like this fails identically on
+    # every retry, so there is nothing a sandbox (or another 3 minutes of
+    # readiness polling) could tell us that this cheap, static check
+    # doesn't already know. MISSING_FILES_PREFIX lets routers/deploy.py
+    # show a specific, actionable reason instead of the generic message
+    # every other (non-deterministic) failure gets.
+    missing_imports = find_missing_local_imports(project_files)
+    if missing_imports:
+        return await fail(f"{MISSING_FILES_PREFIX}{_format_missing_imports(missing_imports)}")
 
     sandbox = None
     try:

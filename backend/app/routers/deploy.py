@@ -21,6 +21,7 @@ from pymongo.database import Database
 from ..db import get_db
 from ..logger import log_activity
 from ..sandbox_deploy import (
+    MISSING_FILES_PREFIX,
     STATUS_DEPLOYING,
     STATUS_EXPIRED,
     STATUS_FAILED,
@@ -29,6 +30,7 @@ from ..sandbox_deploy import (
     ensure_preview,
     load_run_files,
     preview_unavailable_reason,
+    undeployable_reason,
 )
 from ..users import current_user, require_user
 from ..webproject import build_zip, is_web_project
@@ -53,6 +55,16 @@ GENERIC_FAILURE = "This project couldn't be previewed. Download the source zip t
 # hang (the same reason OnDemand's own viewer surfaces this explicitly
 # instead of silently redeploying).
 EXPIRED_MESSAGE = "This preview has expired. Redeploy the project to generate a fresh preview."
+
+
+def _missing_files_message(named: str) -> str:
+    """`named` is the raw "spec (imported by file), ..." fragment from
+    sandbox_deploy.undeployable_reason / a stored MISSING_FILES_PREFIX
+    error. Wraps it in one judge-facing sentence — safe to show every
+    viewer, not just an admin, since it names nothing sensitive: only
+    that a source file references a sibling that was never produced, a
+    property of the run's own output, not of our infrastructure."""
+    return f"This project can't be deployed — it references {named}, which was never generated."
 
 
 def _load_run_or_404(db: Database, run_id: int) -> dict:
@@ -85,12 +97,21 @@ def get_preview_status(run_id: int, db: Database = Depends(get_db), viewer: dict
     task = _task_for(db, run)
     deployment = run.get("deployment") or {}
     status = deployment_state(deployment)
+    is_web = is_web_project(task.get("expected_deliverables", ""))
+    stored_error = deployment.get("error", "")
+    # Cheap, synchronous, no sandbox — checked on every poll rather than
+    # only right before deploying, so "View website" can be hidden (or
+    # shown disabled with a reason) before a judge ever clicks into a
+    # guaranteed 3-minutes-then-fail. Skipped once a preview is actually
+    # live: a working deployment has already proven this question moot,
+    # and re-checking on every poll would just be wasted work.
+    blocked_reason = "" if (not is_web or status == STATUS_LIVE) else undeployable_reason(load_run_files(db, run_id))
     return {
         "run_id": run_id,
         # Drives whether the UI offers "View website" at all. False for a
         # plain-HTML task: the browser renders that itself, so it stays on
         # the ordinary file-viewer path (see webproject.is_web_project).
-        "is_web_project": is_web_project(task.get("expected_deliverables", "")),
+        "is_web_project": is_web,
         "status": status,
         "preview_url": deployment.get("preview_url", "") if status == STATUS_LIVE else "",
         "expires_at": deployment.get("expires_at"),
@@ -100,11 +121,18 @@ def get_preview_status(run_id: int, db: Database = Depends(get_db), viewer: dict
         "provider": deployment.get("provider", "arena"),
         "message": (
             EXPIRED_MESSAGE if status == STATUS_EXPIRED
+            else _missing_files_message(stored_error[len(MISSING_FILES_PREFIX):]) if status == STATUS_FAILED and stored_error.startswith(MISSING_FILES_PREFIX)
             else GENERIC_FAILURE if status == STATUS_FAILED
             else ""
         ),
+        # Non-empty means the project is deterministically broken (a
+        # relative import that resolves to nothing) — every viewer sees
+        # this, not just an admin, since it names nothing sensitive:
+        # unlike `error_detail` below, it's just "these files reference a
+        # sibling that was never produced."
+        "blocked_reason": _missing_files_message(blocked_reason) if blocked_reason else "",
         # Admin-only diagnostics, same split as runs.py's raw_log.
-        "error_detail": deployment.get("error", "") if (viewer and viewer.get("is_admin")) else None,
+        "error_detail": stored_error if (viewer and viewer.get("is_admin")) else None,
     }
 
 

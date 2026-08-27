@@ -266,6 +266,57 @@ def partition_deliverables(
     return website_ids, extra_ids
 
 
+_JS_RELATIVE_IMPORT_RE = re.compile(
+    r"""(?:\bimport\b[^'"]*?\bfrom\s*|\bimport\s*|\bexport\b[^'"]*?\bfrom\s*|\brequire\s*\(\s*)"""
+    r"""['"](\.\.?/[^'"]+)['"]""",
+    re.VERBOSE,
+)
+_CSS_IMPORT_RE = re.compile(r"""@import\s+(?:url\()?['"](\.\.?/[^'"]+)['"]""")
+_SOURCE_EXTENSIONS = (".jsx", ".tsx", ".js", ".mjs", ".ts", ".css", ".scss")
+# Extensions/index-files tried, in order, when a specifier names no
+# extension of its own — the same resolution order a bundler applies.
+_RESOLVE_SUFFIXES = ("", ".jsx", ".tsx", ".js", ".mjs", ".ts", ".css", "/index.jsx", "/index.tsx", "/index.js")
+
+
+def find_missing_local_imports(files: dict[str, bytes]) -> list[tuple[str, str]]:
+    """Every (source file, specifier) pair where a file imports a sibling
+    by relative path that was never actually produced.
+
+    This is the single most common way a generated web project is
+    deterministically, unfixably broken: `main.jsx` importing a
+    `styles.css` the harness never wrote, or a component importing a
+    helper module that doesn't exist. Every retry of a deploy for a
+    project like that fails the exact same way, since nothing about the
+    files themselves ever changes — so this is checked BEFORE a sandbox is
+    ever created, catching in milliseconds what `_url_is_live`'s readiness
+    polling would otherwise spend up to `READY_TIMEOUT_SECONDS` (3
+    minutes) discovering the hard way.
+
+    Only checks first-order relative imports in JS-family and CSS source —
+    not a full bundler-grade resolver (no tsconfig path aliases, no
+    package "exports" field, no transitive graph walk). A false negative
+    here just means the sandbox's own readiness check still catches it,
+    same as before this existed; the goal is catching the common,
+    deterministic case fast, not replacing that check entirely.
+    """
+    missing: list[tuple[str, str]] = []
+    for path, content in files.items():
+        ext = posixpath.splitext(path)[1].lower()
+        if ext not in _SOURCE_EXTENSIONS:
+            continue
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        pattern = _CSS_IMPORT_RE if ext in (".css", ".scss") else _JS_RELATIVE_IMPORT_RE
+        directory = posixpath.dirname(path)
+        for specifier in pattern.findall(text):
+            base = posixpath.normpath(posixpath.join(directory, specifier))
+            if not any((base + suffix) in files for suffix in _RESOLVE_SUFFIXES):
+                missing.append((path, specifier))
+    return missing
+
+
 def detect_framework(files: dict[str, bytes], root: str) -> tuple[str, int, str]:
     """Return (framework, port, start_command) for the chosen root.
 
