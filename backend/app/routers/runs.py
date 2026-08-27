@@ -24,11 +24,12 @@ from ..runner import (
     retry_existing_run,
     start_runs,
 )
-from ..schemas import CompareOut, DeliverableOut, RunOut, RunRequest, RunsOverviewIn, RunTriggerOut, TaskOverviewOut
+from ..schemas import BoardRowOut, CompareOut, DeliverableOut, RunOut, RunRequest, RunsBoardOut, RunsOverviewIn, RunTriggerOut, TaskOut, TaskOverviewOut
 from ..taxonomy import parse_reference_filenames
 from ..users import current_user, is_admin, require_arena_admin, require_user
 from ..webproject import is_web_project
 from .scores import build_compare_entries, package_json_bytes_by_run, website_and_extra_ids
+from .tasks import MAX_TASKS_PAGE_LIMIT, list_tasks as _list_tasks_for_board
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -606,8 +607,16 @@ def runs_overview(
     Mongo query per run/task.
     """
     task_ids = list(dict.fromkeys(body.task_ids))  # de-dup, keep order
+    return list(_build_overviews(task_ids, db, user).values())
+
+
+def _build_overviews(task_ids: list[str], db: Database, user: dict | None) -> dict[str, TaskOverviewOut]:
+    """Shared core of POST /api/runs/overview and GET /api/runs/board —
+    everything below used to live directly in runs_overview; pulled out so
+    the board endpoint can reuse it instead of re-running the same bulk
+    queries under a second code path."""
     if not task_ids:
-        return []
+        return {}
 
     # One query for every run of every requested task, instead of one
     # query per task. Sorted once, up front, exactly like
@@ -670,7 +679,7 @@ def runs_overview(
 
     adapters = all_adapters(db)
 
-    out = []
+    out: dict[str, TaskOverviewOut] = {}
     for task_id in task_ids:
         task_runs = runs_by_task.get(task_id, [])  # already sorted desc by _id
         current_by_harness: dict[str, dict] = {}
@@ -782,15 +791,191 @@ def runs_overview(
         else:
             compare_out = CompareOut(task_id=task_id, revealed=False, entries=[])
 
-        out.append(
-            TaskOverviewOut(
-                task_id=task_id,
-                runs=[out_for(r) for r in current_asc],
-                history=[out_for(r) for r in task_runs],
-                compare=compare_out,
-            )
+        out[task_id] = TaskOverviewOut(
+            task_id=task_id,
+            runs=[out_for(r) for r in current_asc],
+            history=[out_for(r) for r in task_runs],
+            compare=compare_out,
         )
     return out
+
+
+_BOARD_STATUS_VALUES = {
+    "Queued", "In progress", "Retrying failed runs", "Partially failed", "Failed",
+    "Insufficient results to judge", "Judged", "Awaiting your judgement",
+    "Awaiting community & your judgement",
+}
+_BOARD_OUTCOME_VALUES = {"Decisive", "Tie"}
+
+
+def _resolve_row_status(*, running: bool, queued: bool, retrying: bool, done_count: int, has_failed: bool, judged: bool, not_judged_status: str) -> str:
+    """Port of BattleLog.jsx's resolveRowStatus — kept byte-for-byte in
+    sync with it since GET /api/runs/board's status filter has to match
+    the same values the FE dropdown/cards use."""
+    if retrying and (running or queued):
+        return "Retrying failed runs"
+    if running:
+        return "In progress"
+    if queued:
+        return "Queued"
+    if done_count == 0:
+        return "Failed" if has_failed else "Not run"
+    if done_count == 1:
+        return "Insufficient results to judge"
+    if has_failed:
+        return "Partially failed"
+    return "Judged" if judged else not_judged_status
+
+
+def _latest_run_at(runs: list[RunOut]) -> dt.datetime | None:
+    timestamps = [r.finished_at or r.started_at for r in runs]
+    timestamps = [t for t in timestamps if t is not None]
+    return max(timestamps) if timestamps else None
+
+
+def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None) -> list[BoardRowOut]:
+    """Port of BattleLog.jsx's buildRows — one row per round_id, or one
+    'Not run' placeholder when the task has no runs/overview at all."""
+    if overview is None:
+        return [BoardRowOut(task=task, row_key=f"{task.id_aa}#empty", status="Not run", is_primary_card=True)]
+
+    all_runs_by_id = {r.id: r for r in [*overview.history, *overview.runs]}
+    grouped: dict[str, list[RunOut]] = defaultdict(list)
+    for run in all_runs_by_id.values():
+        grouped[str(run.round_id) if run.round_id is not None else f"run-{run.id}"].append(run)
+    if not grouped:
+        return [BoardRowOut(task=task, row_key=f"{task.id_aa}#empty", status="Not run", is_primary_card=True)]
+
+    compare_by_run_id = {e.run_id: e for e in overview.compare.entries}
+    rows: list[BoardRowOut] = []
+    for key, group_runs in grouped.items():
+        sorted_runs = sorted(group_runs, key=lambda r: r.id)
+        done_runs = [r for r in sorted_runs if r.status == "done"]
+        progress_runs = [r for r in sorted_runs if r.status in ("pending", "running")]
+        failed_runs = [r for r in sorted_runs if r.status in ("error", "stopped")]
+        running = any(r.status == "running" for r in progress_runs)
+        queued = any(r.status == "pending" for r in progress_runs)
+        retrying = any(r.is_retrying for r in progress_runs)
+
+        entries = []
+        for run in done_runs:
+            merged = run.model_dump()
+            compare_entry = compare_by_run_id.get(run.id)
+            if compare_entry is not None:
+                merged.update(compare_entry.model_dump())
+            merged["run_id"] = run.id
+            merged["round_id"] = run.round_id
+            merged["score"] = merged.get("already_scored")
+            entries.append(merged)
+        progress_entries = [
+            {
+                "run_id": r.id, "round_id": r.round_id, "harness_key": r.harness_key, "model": r.model,
+                "done": r.deliverables_done, "expected": r.deliverables_expected, "status": r.status,
+                "retrying": r.is_retrying, "can_stop": r.can_stop, "submitted_by": r.submitted_by,
+            }
+            for r in progress_runs
+        ]
+        failed_entries = [
+            {
+                "run_id": r.id, "round_id": r.round_id, "harness_key": r.harness_key, "model": r.model,
+                "status": r.status, "error_message": r.error_message or ("Run stopped." if r.status == "stopped" else ""),
+                "can_retry": r.can_retry, "submitted_by": r.submitted_by,
+            }
+            for r in failed_runs
+        ]
+
+        judged = any(e.get("score") is not None for e in entries)
+        community_judged = any((e.get("community_vote_count") or 0) > 0 for e in entries)
+        not_judged_status = "Awaiting your judgement" if community_judged else "Awaiting community & your judgement"
+        scored = sorted((e for e in entries if e.get("score") is not None), key=lambda e: -e["score"])
+        outcome, margin = None, 0.0
+        if judged and len(scored) >= 2:
+            top = scored[0]["score"]
+            tie = sum(1 for e in scored if e["score"] == top) > 1
+            outcome = "Tie" if tie else "Decisive"
+            margin = 0.0 if tie else round(top - scored[1]["score"], 1)
+
+        rows.append(
+            BoardRowOut(
+                task=task,
+                row_key=f"{task.id_aa}#{key}",
+                round_id=sorted_runs[0].round_id,
+                status=_resolve_row_status(
+                    running=running, queued=queued, retrying=retrying, done_count=len(entries),
+                    has_failed=len(failed_entries) > 0, judged=judged, not_judged_status=not_judged_status,
+                ),
+                outcome=outcome,
+                margin=margin,
+                latest_run_at=_latest_run_at(sorted_runs),
+                entries=scored if judged else entries,
+                progress_entries=progress_entries,
+                failed_entries=failed_entries,
+            )
+        )
+    # Primary card = the row with the newest activity, same tiebreak
+    # (row_key ascending) buildRows applies before marking rows[0].
+    rows.sort(key=lambda r: r.row_key)
+    rows.sort(key=lambda r: r.latest_run_at or dt.datetime.min.replace(tzinfo=dt.timezone.utc), reverse=True)
+    rows[0].is_primary_card = True
+    return rows
+
+
+@router.get("/board", response_model=RunsBoardOut)
+def runs_board(
+    category: str | None = None,
+    group: str | None = None,
+    include_deleted: bool = False,
+    status: str | None = None,
+    outcome: str | None = None,
+    sort: str = "desc",
+    page: int = 1,
+    limit: int = 6,
+    db: Database = Depends(get_db),
+    user: dict | None = Depends(current_user),
+):
+    """Combined, filtered, paginated task+overview endpoint — replaces the
+    GET /api/tasks + POST /api/runs/overview pair that BattleLog/Evaluate/
+    Benchmark each do today. Unlike paginating /api/tasks alone, status/
+    outcome/sort are resolved here (same rules as buildRows/resolveRowStatus
+    on the FE) BEFORE pagination, so a page always has exactly `limit`
+    matching rows instead of some tasks silently failing a client-side
+    filter after the page was already picked.
+    """
+    if status is not None and status not in _BOARD_STATUS_VALUES:
+        raise HTTPException(status_code=400, detail=f"unknown status filter: {status!r}")
+    if outcome is not None and outcome not in _BOARD_OUTCOME_VALUES:
+        raise HTTPException(status_code=400, detail=f"unknown outcome filter: {outcome!r}")
+    if sort not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail=f"unknown sort: {sort!r}")
+    page = max(1, page)
+    limit = max(1, min(limit, MAX_TASKS_PAGE_LIMIT))
+
+    # Unpaginated on purpose: which round of which task lands on which
+    # page depends on status/outcome/latest_run_at, none of which are
+    # known until overview data is built below — see _board_rows_for_task.
+    # A cache hit inside list_tasks returns plain cached dicts, not TaskOut
+    # instances (that coercion normally happens via FastAPI's response_model
+    # when the route runs through HTTP, which calling the function directly
+    # skips) — normalize both cases the same way here.
+    raw_tasks = _list_tasks_for_board(Response(), category=category, group=group, include_deleted=include_deleted, page=1, limit=None, db=db, user=user)
+    tasks = [t if isinstance(t, TaskOut) else TaskOut.model_validate(t) for t in raw_tasks]
+    overviews = _build_overviews([t.id_aa for t in tasks], db, user)
+
+    rows: list[BoardRowOut] = []
+    for task in tasks:
+        rows.extend(_board_rows_for_task(task, overviews.get(task.id_aa)))
+    rows = [r for r in rows if r.status != "Not run"]
+    if status:
+        rows = [r for r in rows if r.status == status]
+    if outcome:
+        rows = [r for r in rows if r.outcome == outcome]
+
+    rows.sort(key=lambda r: r.row_key)
+    rows.sort(key=lambda r: r.latest_run_at or dt.datetime.min.replace(tzinfo=dt.timezone.utc), reverse=(sort == "desc"))
+
+    total = len(rows)
+    start = (page - 1) * limit
+    return RunsBoardOut(rows=rows[start : start + limit], total=total, page=page, limit=limit)
 
 
 @router.get("/{run_id}", response_model=RunOut)

@@ -284,6 +284,38 @@ class TaskOverviewOut(BaseModel):
     compare: CompareOut
 
 
+class BoardRowOut(BaseModel):
+    """One battle card — a task's task metadata plus one round's runs,
+    merged server-side (port of the FE's buildRows/resolveRowStatus) so
+    GET /api/runs/board can filter/sort/paginate on status and outcome,
+    not just task-level fields. See routers/runs.py::runs_board."""
+
+    task: TaskOut
+    row_key: str
+    round_id: str | int | None = None
+    status: str
+    outcome: str | None = None
+    margin: float = 0
+    latest_run_at: dt.datetime | None = None
+    is_primary_card: bool = False
+    entries: list[dict] = []
+    progress_entries: list[dict] = []
+    failed_entries: list[dict] = []
+
+
+class RunsBoardOut(BaseModel):
+    rows: list[BoardRowOut]
+    total: int
+    page: int
+    limit: int
+
+
+class HarnessBattleOut(BaseModel):
+    task: TaskOut
+    score: float
+    result: str  # "Win" | "Loss" | "Tie"
+
+
 class ScoreOut(BaseModel):
     task_id: str
     harness_key: str
