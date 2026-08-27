@@ -9,8 +9,8 @@ from ..cache import get_json as cache_get, invalidate as cache_invalidate, mark_
 from ..db import get_db
 from ..harnesses.registry import BUILTIN
 from ..logger import log_activity
-from ..schemas import CustomHarnessIn, CustomHarnessOut, HarnessInfo
-from ..users import require_user
+from ..schemas import CustomHarnessIn, CustomHarnessOut, HarnessBattleOut, HarnessInfo, TaskOut
+from ..users import current_user, require_user
 
 router = APIRouter(prefix="/api/harnesses", tags=["harnesses"])
 
@@ -57,6 +57,39 @@ def list_harnesses(response: Response, db: Database = Depends(get_db)):
             )
         )
     cache_set("harnesses", out, ttl_seconds=120)
+    return out
+
+
+@router.get("/{key}/battles", response_model=list[HarnessBattleOut])
+def harness_battles(key: str, db: Database = Depends(get_db), user: dict | None = Depends(current_user)):
+    """Every revealed task this harness has a score in, with win/loss/tie.
+
+    Replaces HarnessProfile.jsx's old N+1 (one GET /api/compare/{id} per
+    task): reuses runs.py's bulk overview builder instead so this is a
+    fixed handful of queries regardless of task count.
+    """
+    from .runs import _build_overviews
+    from .tasks import list_tasks as _list_tasks_for_battles
+
+    raw_tasks = _list_tasks_for_battles(Response(), db=db, user=user)
+    tasks = [t if isinstance(t, TaskOut) else TaskOut.model_validate(t) for t in raw_tasks]
+    overviews = _build_overviews([t.id_aa for t in tasks], db, user)
+
+    out = []
+    for task in tasks:
+        overview = overviews.get(task.id_aa)
+        if overview is None or not overview.compare.revealed:
+            continue
+        mine = next((e for e in overview.compare.entries if e.harness_key == key), None)
+        if mine is None or mine.already_scored is None:
+            continue
+        best = max(e.already_scored for e in overview.compare.entries if e.already_scored is not None)
+        top_count = sum(1 for e in overview.compare.entries if e.already_scored == best)
+        if mine.already_scored != best:
+            result = "Loss"
+        else:
+            result = "Tie" if top_count > 1 else "Win"
+        out.append(HarnessBattleOut(task=task, score=mine.already_scored, result=result))
     return out
 
 
