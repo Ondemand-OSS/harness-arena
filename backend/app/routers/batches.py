@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from pymongo.database import Database
@@ -61,15 +63,58 @@ def _public_batch_error_message(batch: dict, viewer: dict | None) -> str:
     return "Batch failed."
 
 
-def _batch_out(db: Database, batch: dict, viewer: dict | None = None) -> BatchOut:
+def _batch_task_titles(db: Database, task_ids: list[str]) -> dict[str, str]:
+    if not task_ids:
+        return {}
+    return {t["_id"]: t.get("title", "") for t in db.tasks.find({"_id": {"$in": task_ids}}, {"title": 1})}
+
+
+def _done_output_counts(db: Database, task_ids: list[str]) -> dict[str, int]:
+    """done_outputs (harnesses whose latest run is `done`) for every task_id
+    in ONE query, instead of one latest_runs_by_harness() query per task —
+    used by list_batches, which otherwise ran that per task of every one of
+    its (up to 20) batches."""
+    if not task_ids:
+        return {}
+    latest_by_task: dict[str, dict[str, dict]] = defaultdict(dict)
+    for run in db.runs.find(
+        {"task_id": {"$in": task_ids}, "is_deleted": {"$ne": True}},
+        {"task_id": 1, "harness_key": 1, "status": 1},
+    ).sort("_id", -1):
+        latest_by_task[run["task_id"]].setdefault(run["harness_key"], run)
+    return {tid: sum(1 for r in harnesses.values() if r["status"] == "done") for tid, harnesses in latest_by_task.items()}
+
+
+def _batch_submitter_names(db: Database, batches: list[dict]) -> dict[int, str]:
+    user_ids = {b["user_id"] for b in batches if b.get("user_id") is not None}
+    if not user_ids:
+        return {}
+    return {
+        u["_id"]: (u.get("display_name") or u.get("username"))
+        for u in db.users.find({"_id": {"$in": list(user_ids)}}, {"display_name": 1, "username": 1})
+    }
+
+
+def _batch_out(
+    db: Database,
+    batch: dict,
+    viewer: dict | None = None,
+    *,
+    titles: dict[str, str] | None = None,
+    done_counts: dict[str, int] | None = None,
+    submitter_names: dict[int, str] | None = None,
+) -> BatchOut:
+    """`titles`/`done_counts`/`submitter_names` let a caller that's building
+    several of these at once (list_batches) pass bulk-fetched, $in-batched
+    lookups instead of every call repeating its own queries. Single-batch
+    call sites (get_batch, submit_batch) leave them unset and get the
+    original per-call-query behavior, unchanged — same convention runs.py's
+    _run_out uses for deliverables/submitted_by."""
     user_id = viewer["_id"] if viewer else None
     task_ids = batch["task_ids"]
     completed = set(batch.get("completed_task_ids", []))
-    titles = (
-        {t["_id"]: t.get("title", "") for t in db.tasks.find({"_id": {"$in": task_ids}}, {"title": 1})}
-        if task_ids
-        else {}
-    )
+    if titles is None:
+        titles = _batch_task_titles(db, task_ids)
     # Scoped to THIS batch's own profile — a score is stored per
     # (task_id, provider_config_id) (see scores' unique index), so a task
     # the user judged under an EARLIER, different profile must not read as
@@ -104,7 +149,10 @@ def _batch_out(db: Database, batch: dict, viewer: dict | None = None) -> BatchOu
 
     tasks = []
     for tid in task_ids:
-        done_outputs = sum(1 for r in latest_runs_by_harness(db, tid).values() if r["status"] == "done")
+        if done_counts is not None:
+            done_outputs = done_counts.get(tid, 0)
+        else:
+            done_outputs = sum(1 for r in latest_runs_by_harness(db, tid).values() if r["status"] == "done")
         if tid in judged:
             state = "judged"
         elif tid in completed:
@@ -117,9 +165,12 @@ def _batch_out(db: Database, batch: dict, viewer: dict | None = None) -> BatchOu
 
     submitted_by = None
     if batch.get("user_id") is not None:
-        user = db.users.find_one({"_id": batch["user_id"]})
-        if user is not None:
-            submitted_by = user.get("display_name") or user.get("username")
+        if submitter_names is not None:
+            submitted_by = submitter_names.get(batch["user_id"])
+        else:
+            user = db.users.find_one({"_id": batch["user_id"]})
+            if user is not None:
+                submitted_by = user.get("display_name") or user.get("username")
 
     return BatchOut(
         id=batch["_id"],
@@ -193,8 +244,12 @@ async def submit_batch(
 @router.get("", response_model=list[BatchOut])
 def list_batches(active_only: bool = False, db: Database = Depends(get_db), user: dict | None = Depends(current_user)):
     query = {"status": "running"} if active_only else {}
-    batches = db.batches.find(query).sort("_id", -1).limit(20)
-    return [_batch_out(db, b, user) for b in batches]
+    batches = list(db.batches.find(query).sort("_id", -1).limit(20))
+    all_task_ids = list(dict.fromkeys(tid for b in batches for tid in b.get("task_ids", [])))
+    titles = _batch_task_titles(db, all_task_ids)
+    done_counts = _done_output_counts(db, all_task_ids)
+    submitter_names = _batch_submitter_names(db, batches)
+    return [_batch_out(db, b, user, titles=titles, done_counts=done_counts, submitter_names=submitter_names) for b in batches]
 
 
 @router.get("/{batch_id}", response_model=BatchOut)

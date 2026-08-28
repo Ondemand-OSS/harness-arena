@@ -536,6 +536,50 @@ def admin_list_runs(
     ]
 
 
+def _run_outs_batched(runs: list[dict], db: Database, user: dict | None) -> list[RunOut]:
+    """Bulk-fetch deliverables/submitter names/ondemand labels once for a
+    whole list of runs, instead of letting each _run_out() call fall back to
+    its per-run queries (see its docstring) — same $in-batching
+    _build_overviews already does for runs_board/runs_overview, just not
+    previously applied to these simpler by-task listings."""
+    if not runs:
+        return []
+    run_ids = [r["_id"] for r in runs]
+    deliverables_by_run: dict[int, list[DeliverableOut]] = defaultdict(list)
+    for d in db.deliverables.find({"run_id": {"$in": run_ids}}, {"content": 0}):
+        deliverables_by_run[d["run_id"]].append(
+            DeliverableOut(id=d["_id"], filename=d["filename"], media_type=d["media_type"], size_bytes=d["size_bytes"], relpath=d.get("relpath", ""))
+        )
+    submitter_ids = {r["submitted_by_user_id"] for r in runs if r.get("submitted_by_user_id") is not None}
+    submitter_names = (
+        {
+            u["_id"]: (u.get("display_name") or u.get("username"))
+            for u in db.users.find({"_id": {"$in": list(submitter_ids)}}, {"display_name": 1, "username": 1})
+        }
+        if submitter_ids
+        else {}
+    )
+    ondemand_ids = list(
+        {r["ondemand_model_id"] for r in runs if r.get("harness_key") == "ondemand" and r.get("ondemand_model_id") is not None}
+    )
+    ondemand_labels = (
+        {doc["_id"]: doc.get("label") for doc in db.ondemand_models.find({"_id": {"$in": ondemand_ids}}, {"label": 1})}
+        if ondemand_ids
+        else {}
+    )
+    return [
+        _run_out(
+            r,
+            db,
+            user,
+            deliverables=deliverables_by_run.get(r["_id"], []),
+            submitted_by=submitter_names.get(r.get("submitted_by_user_id")),
+            ondemand_labels=ondemand_labels,
+        )
+        for r in runs
+    ]
+
+
 @router.get("/by-task/{task_id}", response_model=list[RunOut])
 def list_runs_for_task(
     task_id: str,
@@ -548,7 +592,7 @@ def list_runs_for_task(
     document in place for audit purposes, but it should never reappear
     here once a newer one exists for the same harness."""
     current = latest_runs_by_harness(db, task_id, provider_config_id=provider_config_id)
-    return [_run_out(r, db, user) for r in sorted(current.values(), key=lambda r: r["_id"])]
+    return _run_outs_batched(sorted(current.values(), key=lambda r: r["_id"]), db, user)
 
 
 @router.get("/by-task/{task_id}/history", response_model=list[RunOut])
@@ -564,7 +608,7 @@ def list_run_history_for_task(
     deliberately keeps using the current-only endpoint since it's showing
     "what's gradeable right now," not an audit trail."""
     runs = all_runs_for_task(db, task_id, provider_config_id=provider_config_id)
-    return [_run_out(r, db, user) for r in runs]
+    return _run_outs_batched(runs, db, user)
 
 
 def _resolve_ever_done_provider_config_id(current_by_harness_asc: list[dict], history_desc: list[dict]) -> int | None:

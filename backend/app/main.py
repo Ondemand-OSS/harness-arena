@@ -6,6 +6,7 @@ import threading
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -14,7 +15,7 @@ from starlette.types import Scope
 
 from .cache import connection_status as cache_connection_status
 from .cache import enabled as cache_enabled
-from .db import get_db, init_db
+from .db import close_client, get_db, init_db
 from .logger import get_logger, log_error
 from .routers import batches, config, deploy, harnesses, leaderboard, ondemand_models, runs, scores, stats, tasks, users
 from .batches import reconcile_orphaned_batches
@@ -63,6 +64,9 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Arena-Cache", "X-Arena-Data-Source", "X-Arena-Cache-Message"],
 )
+# JSON list endpoints (tasks/board/leaderboard/overview) can run to hundreds
+# of KB uncompressed; nothing else in this stack (no reverse proxy) gzips.
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 @app.middleware("http")
@@ -94,6 +98,15 @@ def on_startup():
     # Keep a strong reference to the periodic reconciliation task.
     global _reconciler
     _reconciler = asyncio.create_task(reconciliation_loop())
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    # Release pooled Mongo connections instead of leaving them to the OS to
+    # tear down; matters most for graceful restarts/redeploys, where a
+    # process that never closes its pool can leave connections lingering on
+    # the Atlas side until the TCP-level timeout catches up.
+    close_client()
 
 
 app.include_router(users.router)
