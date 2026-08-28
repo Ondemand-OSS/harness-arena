@@ -21,7 +21,7 @@ from .base import ProviderSettings, RunResult
 from ..taxonomy import parse_deliverables
 from ..webproject import is_web_project
 
-TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "3600"))
+TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "7200"))
 HERMES_BIN = os.environ.get("ARENA_HERMES_BIN", "hermes")
 
 _OPENAI_DEFAULT_HOSTS = {"api.openai.com"}

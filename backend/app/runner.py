@@ -37,7 +37,7 @@ HARNESS_PREVIEW_TTL_SECONDS = int(os.environ.get("ARENA_HARNESS_PREVIEW_TTL_SECO
 
 
 # Per-process cap for active adapter subprocesses.
-MAX_CONCURRENT_RUNS = max(1, int(os.environ.get("ARENA_MAX_CONCURRENT_RUNS", "5")))
+MAX_CONCURRENT_RUNS = max(1, int(os.environ.get("ARENA_MAX_CONCURRENT_RUNS", "20")))
 _run_slots = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
 # Fleet-wide soft cap based on currently running records.

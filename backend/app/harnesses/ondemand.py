@@ -18,8 +18,10 @@ from ._reference_files import reference_file_blobs
 from .base import ProviderSettings, RunResult
 
 BASE_URL = "https://api.on-demand.io"
+GATEWAY_URL = "https://gateway.on-demand.io"
 CREATE_SESSION_URL = f"{BASE_URL}/chat/v1/sessions"
 SUGGEST_PLUGINS_URL = f"{BASE_URL}/plugin/v1/suggest_plugins"
+PLUGIN_CONFIGURATION_URL = f"{GATEWAY_URL}/plugin/v1/plugin_configuration"
 MEDIA_UPLOAD_URL = f"{BASE_URL}/media/v1/public/file/raw"
 # Working directory inside a Vercel sandbox — where OnDemand's agent
 # builds a web project, and so where its sources are read back from.
@@ -28,14 +30,14 @@ SANDBOX_ROOT = "/vercel/sandbox"
 log = logging.getLogger(__name__)
 
 DOCUMENT_AGENT_PLUGIN_ID = "plugin-1713954536"
-TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "3600"))
+TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "7200"))
 # Fallback only — used when the admin hasn't set a reasoning_effort on the
 # selected OnDemand model (routers/ondemand_models.py, resolved in
 # runner.py). Kept at the cheapest tier by default rather than "max" so an
 # admin who never configured a model doesn't unknowingly pay for the most
 # expensive reasoning tier on every run.
 REASONING_EFFORT = "low"
-SUGGESTED_PLUGIN_LIMIT = 5
+SUGGESTED_PLUGIN_LIMIT = 10
 
 DEFAULT_AGENT_IDS = [
     "plugin-1775547203",
@@ -395,7 +397,7 @@ def _harvest_preview(event: dict, state: dict) -> None:
 
 # Generated dependency and build directories excluded from source capture.
 _SANDBOX_SKIP_DIRS = ("node_modules", ".git", "dist", "build", ".next", ".vercel", ".cache")
-_SANDBOX_MAX_FILES = 300
+_SANDBOX_MAX_FILES = 400
 _SANDBOX_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -729,6 +731,21 @@ def _extract_session_id(response_json: dict) -> str | None:
     return None
 
 
+async def _subscribe_plugin(client: httpx.AsyncClient, plugin_id: str, headers: dict) -> bool:
+    try:
+        resp = await client.post(
+            PLUGIN_CONFIGURATION_URL,
+            json={"pluginId": plugin_id, "active": True, "metadata": {}},
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+    config = (data.get("data") or {}).get("pluginConfiguration") if isinstance(data, dict) else None
+    return bool(isinstance(config, dict) and config.get("active") is True)
+
+
 async def _suggest_plugin_ids(client: httpx.AsyncClient, query: str, headers: dict, enabled: bool) -> list[str]:
     """`POST /plugin/v1/suggest_plugins` — task-specific plugins on top of
     the always-on DEFAULT_AGENT_IDS crew (e.g. a task that needs live web
@@ -759,7 +776,17 @@ async def _suggest_plugin_ids(client: httpx.AsyncClient, query: str, headers: di
         if not isinstance(plugin, dict):
             continue
         plugin_id = plugin.get("pluginId") or plugin.get("id")
-        if plugin_id:
+        if not plugin_id:
+            continue
+        plugin_config = plugin.get("pluginConfiguration") or {}
+        if plugin.get("isSubscribed"):
+            if plugin_config.get("active") is True:
+                ids.append(str(plugin_id))
+            continue
+        auth_type = ((plugin.get("action") or {}).get("authentication") or {}).get("type")
+        if auth_type == "OAUTH":
+            continue
+        if await _subscribe_plugin(client, str(plugin_id), headers):
             ids.append(str(plugin_id))
     return ids
 

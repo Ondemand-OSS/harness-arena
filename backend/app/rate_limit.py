@@ -25,9 +25,9 @@ from pymongo.database import Database
 from .db import next_id
 from .users import is_admin
 
-TASK_SUBMISSION_LIMIT = 10
+TASK_SUBMISSION_LIMIT = 20
 TASK_SUBMISSION_WINDOW_HOURS = 24
-MAX_ACTIVE_TASKS_PER_USER = 1
+MAX_ACTIVE_TASKS_PER_USER = 4
 
 
 def task_submission_limit(user: dict) -> int:

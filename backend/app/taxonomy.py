@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 
-GROUPS = ["Code", "Research", "Analysis & Risk", "Operations"]
+GROUPS = ["Code", "Research", "Analysis & Risk", "Operations", "Real World Agentic Tasks"]
 DEFAULT_GROUP = "Other"
 
 CATEGORY_GROUPS = {

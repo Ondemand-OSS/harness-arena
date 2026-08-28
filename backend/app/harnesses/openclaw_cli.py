@@ -23,7 +23,7 @@ from .base import ProviderSettings, RunResult
 from ..taxonomy import parse_deliverables
 from ..webproject import is_web_project
 
-TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "3600"))
+TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "7200"))
 OPENCLAW_BIN = os.environ.get("ARENA_OPENCLAW_BIN", "openclaw")
 # Where the Docker image installs OpenClaw's private Node 22 (see
 # backend/Dockerfile) — must be ahead of PATH's system Node when we spawn

@@ -20,7 +20,7 @@ from .base import ProviderSettings, RunResult
 from ..taxonomy import parse_deliverables
 from ..webproject import is_web_project
 
-TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "3600"))
+TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "7200"))
 CODEX_BIN = os.environ.get("ARENA_CODEX_BIN", "codex")
 
 # OpenAI's own API doesn't need a custom `model_providers` override — Codex
