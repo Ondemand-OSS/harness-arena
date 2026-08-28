@@ -46,6 +46,12 @@ GLOBAL_MAX_CONCURRENT_RUNS = max(
 )
 SLOT_POLL_INTERVAL_SECONDS = max(0.5, float(os.environ.get("ARENA_SLOT_POLL_INTERVAL_SECONDS", "2")))
 
+# Deliverable bytes are stored inline on a `deliverables` document, and Mongo
+# hard-rejects any document over 16MB (DocumentTooLarge). Capped well under
+# that so other document fields and BSON overhead never push a borderline
+# file over the real limit.
+MAX_DELIVERABLE_BYTES = int(os.environ.get("ARENA_MAX_DELIVERABLE_BYTES", str(15 * 1024 * 1024)))
+
 
 async def _acquire_global_slot(db: Database, stop_requested) -> bool:
     """Wait for a fleet-wide slot, unless execution is stopped."""
@@ -587,9 +593,23 @@ async def _execute_one_leased(
             return
 
         written_count = 0
+        oversized: list[str] = []
         for relpath in result.deliverables:
             abspath = os.path.join(workdir, relpath)
             if not os.path.isfile(abspath):
+                continue
+            # Deliverable bytes are stored inline on the document, and Mongo
+            # rejects any document over 16MB outright (DocumentTooLarge) —
+            # without this check, one oversized harness output would crash
+            # run processing instead of just failing to save that one file.
+            # Checked via stat before reading so we don't pull a huge file
+            # into memory just to reject it.
+            if os.path.getsize(abspath) > MAX_DELIVERABLE_BYTES:
+                oversized.append(os.path.basename(relpath))
+                log.warning(
+                    "run %s: deliverable %s is %d bytes, over the %d byte cap — skipping",
+                    run_id, relpath, os.path.getsize(abspath), MAX_DELIVERABLE_BYTES,
+                )
                 continue
             with open(abspath, "rb") as f:
                 content = f.read()
@@ -613,12 +633,18 @@ async def _execute_one_leased(
         # to Mongo. Same "no deliverables" failure as the check above, just
         # caught one step later.
         if written_count == 0:
+            error_message = "Harness reported success but produced no deliverable files."
+            if oversized:
+                error_message = (
+                    f"Harness produced only oversized deliverable file(s) ({', '.join(oversized)}) "
+                    f"exceeding the {MAX_DELIVERABLE_BYTES // (1024 * 1024)}MB per-file storage limit."
+                )
             db.runs.update_one(
                 {"_id": run_id},
                 {
                     "$set": {
                         "status": "error",
-                        "error_message": "Harness reported success but produced no deliverable files.",
+                        "error_message": error_message,
                         "finished_at": _utcnow(),
                         "raw_log": raw_log,
                         "ondemand_session_id": ondemand_session_id,
