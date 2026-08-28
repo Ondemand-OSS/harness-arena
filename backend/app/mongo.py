@@ -72,6 +72,11 @@ def ensure_indexes(db: Database) -> None:
     db.scores.create_index([("task_id", ASCENDING), ("harness_key", ASCENDING), ("user_id", ASCENDING), ("provider_config_id", ASCENDING)], unique=True)
     db.scores.create_index("user_id")
     db.scores.create_index([("task_id", ASCENDING), ("provider_config_id", ASCENDING)])
+    # elo.compute_leaderboard's whole-site case (no category/task_ids) filters
+    # only is_deleted, then sorts by judged_at — none of the compound indexes
+    # above start with is_deleted, so that was a full collection scan plus an
+    # in-memory sort on every leaderboard cache miss.
+    db.scores.create_index([("is_deleted", ASCENDING), ("judged_at", ASCENDING)])
     db.judge_verdicts.create_index([("task_id", ASCENDING), ("harness_key", ASCENDING)], unique=True)
     db.runs.create_index([("task_id", ASCENDING), ("harness_key", ASCENDING), ("source", ASCENDING)])
     db.runs.create_index([("task_id", ASCENDING), ("is_deleted", ASCENDING), ("provider_config_id", ASCENDING)])
