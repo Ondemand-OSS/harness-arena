@@ -42,7 +42,7 @@ from .base import ProviderSettings, RunResult
 from ..taxonomy import parse_deliverables
 from ..webproject import is_web_project
 
-TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "3600"))
+TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "7200"))
 CLAUDE_BIN = os.environ.get("ARENA_CLAUDE_BIN", "claude")
 
 # Never let a literal secret value end up in a stored raw_log/error_message.

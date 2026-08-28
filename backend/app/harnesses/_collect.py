@@ -42,7 +42,7 @@ WEB_IGNORED_DIRS = {
 }
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
-MAX_FILES = 60
+MAX_FILES = 400
 # A real project tree is many small files — a bare Vite+React app is
 # already ~10 before any feature code, and the cap has to leave room for
 # a genuinely built-out app without also letting a runaway run through.
