@@ -23,12 +23,38 @@ ACTIVITY_LOG_RETENTION_DAYS = int(os.environ.get("ACTIVITY_LOG_RETENTION_DAYS", 
 
 _client: MongoClient | None = None
 
+# Explicit pool bounds. pymongo's default maxPoolSize (100) is sized for a
+# dedicated cluster; on a shared/low-tier Atlas cluster a handful of app
+# instances each opening up to 100 connections can approach the cluster's
+# connection cap on its own, and idle connections keep counting against it
+# forever without a maxIdleTimeMS. One process should never need more than a
+# small multiple of ARENA_MAX_CONCURRENT_RUNS (see runner.py) plus request
+# traffic, so bound it and let idle connections close themselves down.
+MONGODB_MAX_POOL_SIZE = int(os.environ.get("MONGODB_MAX_POOL_SIZE", "20"))
+MONGODB_MIN_POOL_SIZE = int(os.environ.get("MONGODB_MIN_POOL_SIZE", "0"))
+MONGODB_MAX_IDLE_TIME_MS = int(os.environ.get("MONGODB_MAX_IDLE_TIME_MS", "60000"))
+
 
 def get_client() -> MongoClient:
     global _client
     if _client is None:
-        _client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=8000, tz_aware=True)
+        _client = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=8000,
+            tz_aware=True,
+            maxPoolSize=MONGODB_MAX_POOL_SIZE,
+            minPoolSize=MONGODB_MIN_POOL_SIZE,
+            maxIdleTimeMS=MONGODB_MAX_IDLE_TIME_MS,
+        )
     return _client
+
+
+def close_client() -> None:
+    """Release the pooled connections on process shutdown."""
+    global _client
+    if _client is not None:
+        _client.close()
+        _client = None
 
 
 def get_db() -> Database:
