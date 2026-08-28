@@ -90,23 +90,39 @@ def send_signup_code(email: str, code: str) -> None:
         raise RuntimeError("could not send verification email") from exc
 
 
+_signing_key_cache: bytes | None = None
+
+
 def _signing_key(db: Database) -> bytes:
     """Return a restart-stable session key without exposing it over HTTP.
 
     Deployments may set `ARENA_SESSION_SECRET`. Otherwise a local arena gets
     one generated once in its own Mongo database, so a normal backend restart
     cannot leave the UI appearing signed in while protected API calls fail.
+
+    Memoized in-process: this is called on nearly every request (token
+    sign/verify), and the value never changes once it exists — env var is
+    fixed for the process lifetime, and the DB fallback only ever creates
+    the document once ($setOnInsert). Without this, every single request
+    paid for a Mongo find_one_and_update just to re-read a constant. A race
+    on first call is harmless: find_one_and_update's upsert is atomic per
+    document, so concurrent callers all converge on the same stored value.
     """
+    global _signing_key_cache
+    if _signing_key_cache is not None:
+        return _signing_key_cache
     configured = os.environ.get(SESSION_SECRET_ENV)
     if configured:
-        return configured.encode()
+        _signing_key_cache = configured.encode()
+        return _signing_key_cache
     setting = db.arena_settings.find_one_and_update(
         {"_id": "session_signing_key"},
         {"$setOnInsert": {"value": secrets.token_urlsafe(48)}},
         upsert=True,
         return_document=ReturnDocument.AFTER,
     )
-    return setting["value"].encode()
+    _signing_key_cache = setting["value"].encode()
+    return _signing_key_cache
 
 
 def hash_password(password: str) -> str:

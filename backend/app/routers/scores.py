@@ -28,6 +28,7 @@ import datetime as dt
 import json
 import random
 import string
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
 from pymongo.database import Database
@@ -191,6 +192,22 @@ def _ensure_task_is_finished(db: Database, task_id: str) -> None:
         )
 
 
+def _tasks_with_done_run(db: Database, task_ids: list[str]) -> set[str]:
+    """task_ids that have at least one harness whose LATEST run is `done` —
+    batches latest_runs_by_harness() across every task_id in one query
+    instead of one query per task (see next_unjudged, which otherwise looped
+    every task in the whole catalog)."""
+    if not task_ids:
+        return set()
+    latest_status_by_harness: dict[str, dict[str, str]] = defaultdict(dict)
+    for run in db.runs.find(
+        {"task_id": {"$in": task_ids}, "is_deleted": {"$ne": True}},
+        {"task_id": 1, "harness_key": 1, "status": 1},
+    ).sort("_id", -1):
+        latest_status_by_harness[run["task_id"]].setdefault(run["harness_key"], run["status"])
+    return {tid for tid, statuses in latest_status_by_harness.items() if "done" in statuses.values()}
+
+
 @router.get("/next-unjudged")
 def next_unjudged(db: Database = Depends(get_db), user: dict = Depends(require_user)):
     """The task the "Start judging" action should jump to: the first one
@@ -205,11 +222,11 @@ def next_unjudged(db: Database = Depends(get_db), user: dict = Depends(require_u
         return {"task_id": None, "reason": "no_tasks", "judged": 0, "ready": 0}
 
     scored_task_ids = {s["task_id"] for s in db.scores.find({"user_id": user["_id"], "is_deleted": {"$ne": True}}, {"task_id": 1})}
+    ready_task_ids = _tasks_with_done_run(db, [t["_id"] for t in tasks])
     ready = 0
     first_unjudged = None
     for task in tasks:
-        has_done_run = any(r["status"] == "done" for r in latest_runs_by_harness(db, task["_id"]).values())
-        if not has_done_run:
+        if task["_id"] not in ready_task_ids:
             continue
         ready += 1
         if task["_id"] not in scored_task_ids and first_unjudged is None:

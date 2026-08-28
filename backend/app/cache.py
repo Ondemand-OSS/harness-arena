@@ -21,12 +21,15 @@ from dotenv import load_dotenv
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import Response
 
+from .logger import get_logger
+
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 _URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
 _TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
 _PREFIX = os.environ.get("ARENA_CACHE_PREFIX", "harness-arena:v1").strip() or "harness-arena:v1"
 _CLIENT = httpx.Client(timeout=httpx.Timeout(1.5, connect=1.0))
+_log = get_logger("cache")
 
 
 def enabled() -> bool:
@@ -62,8 +65,12 @@ def _command(parts: list[Any]) -> Any:
         )
         response.raise_for_status()
         return response.json().get("result")
-    except (httpx.HTTPError, ValueError, TypeError):
-        # Redis is an optimization, never a dependency for correctness.
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        # Redis is an optimization, never a dependency for correctness — but
+        # a failed DEL means whatever it was invalidating stays live in the
+        # cache until its TTL lapses, so this must be visible somewhere
+        # (stdout/docker logs) instead of vanishing silently.
+        _log.warning("redis command failed, cmd=%s: %s", parts[0] if parts else "?", exc)
         return None
 
 
@@ -103,11 +110,18 @@ def set_json(namespace: str, value: Any, *, variant: str = "default", ttl_second
             ],
         )
         response.raise_for_status()
-    except httpx.HTTPError:
-        pass
+    except httpx.HTTPError as exc:
+        _log.warning("redis set_json failed, namespace=%s variant=%s: %s", namespace, variant, exc)
 
 
 def invalidate(*namespaces: str) -> None:
+    """Bust every cached variant in each namespace (one DEL per namespace
+    hash). Called right after a write, so a failure here isn't just a missed
+    read-side optimization — it means the pre-write response for these
+    namespaces keeps being served until its TTL lapses. `_command` logs the
+    underlying failure; this only adds which namespaces were affected."""
+    if not enabled():
+        return
     keys = [_key(namespace) for namespace in dict.fromkeys(namespaces)]
-    if keys:
-        _command(["DEL", *keys])
+    if keys and _command(["DEL", *keys]) is None:
+        _log.warning("cache invalidation may have failed for namespaces=%s", list(dict.fromkeys(namespaces)))

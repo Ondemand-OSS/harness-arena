@@ -6,6 +6,7 @@ import threading
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -63,6 +64,9 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Arena-Cache", "X-Arena-Data-Source", "X-Arena-Cache-Message"],
 )
+# JSON list endpoints (tasks/board/leaderboard/overview) can run to hundreds
+# of KB uncompressed; nothing else in this stack (no reverse proxy) gzips.
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 @app.middleware("http")
