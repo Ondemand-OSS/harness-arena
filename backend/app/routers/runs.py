@@ -15,7 +15,7 @@ from pymongo.database import Database
 from ..cache import get_json as cache_get, invalidate as cache_invalidate, mark_response as cache_mark, set_json as cache_set
 from ..db import get_db
 from ..logger import log_activity
-from ..public_errors import rate_limit_message
+from ..public_errors import no_deliverable_message, rate_limit_message
 from ..harnesses.registry import all_adapters, enabled_harness_keys
 from ..preview import build_preview, render_pptx_as_pdf
 from ..rate_limit import record_submission, require_no_active_runs, require_quota
@@ -155,6 +155,8 @@ def _public_error_message(run: dict, viewer: dict | None) -> str:
     if run.get("status") != "error" or is_admin(viewer):
         return run.get("error_message", "")
     if message := rate_limit_message(run.get("error_message", "")):
+        return message
+    if message := no_deliverable_message(run.get("error_message", "")):
         return message
     return "Run failed."
 
