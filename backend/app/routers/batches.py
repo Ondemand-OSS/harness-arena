@@ -27,6 +27,9 @@ class SubmitIn(BaseModel):
     # See schemas.RunRequest.ondemand_model_id: the value is resolved
     # server-side from the shared free profile's admin-set mapping instead.
     ondemand_model_id: int | None = None
+    # See schemas.RunRequest.skill_ids / skill_names.
+    skill_ids: list[str] | None = None
+    skill_names: list[str] | None = None
 
 
 class BatchTaskOut(BaseModel):
@@ -223,7 +226,16 @@ async def submit_batch(
 
     require_quota(db, user, task_count=len(body.task_ids))
     require_no_active_runs(db, user, task_count=len(body.task_ids))
-    batch = start_batch(db, body.task_ids, harness_keys, user["_id"], body.provider_config_id, resolved_ondemand_model_id)
+    batch = start_batch(
+        db,
+        body.task_ids,
+        harness_keys,
+        user["_id"],
+        body.provider_config_id,
+        resolved_ondemand_model_id,
+        body.skill_ids,
+        body.skill_names,
+    )
     record_submission(db, user, body.task_ids)
     log_activity(
         db,

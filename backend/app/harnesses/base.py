@@ -18,6 +18,10 @@ class ProviderSettings:
     # see harnesses/ondemand.py's _suggest_plugin_ids for why this defaults
     # off.
     ondemand_suggest_plugins_enabled: bool = False
+    # User-selected OnDemand skill ids (see ondemand_skills.py) to extract
+    # into every harness's workdir before it runs — not OnDemand-specific
+    # execution despite the name, just sourced from OnDemand's skill store.
+    ondemand_skill_ids: list[str] = dataclasses.field(default_factory=list)
     ondemand_session_callback: Callable[[str], None] | None = None
     # Receives scrubbed, incremental answer text while an OnDemand SSE query
     # is still in progress. The runner persists a throttled rolling tail for

@@ -40,6 +40,8 @@ async def _execute_batch_leased(db, batch_id: int, batch: dict) -> None:
     harness_keys = batch["harness_keys"]
     provider_config_id = batch.get("provider_config_id")
     ondemand_model_id = batch.get("ondemand_model_id")
+    skill_ids = batch.get("skill_ids")
+    skill_names = batch.get("skill_names")
     # Carried onto every run so a failed one is retryable by the person who
     # submitted the batch, exactly like a directly-triggered run.
     user_id = batch.get("user_id")
@@ -57,6 +59,8 @@ async def _execute_batch_leased(db, batch_id: int, batch: dict) -> None:
                 provider_config_id=provider_config_id,
                 user_id=user_id,
                 ondemand_model_id=ondemand_model_id,
+                skill_ids=skill_ids,
+                skill_names=skill_names,
             )
         except Exception as exc:
             # One bad task shouldn't abandon the rest of the batch; record
@@ -129,6 +133,8 @@ def start_batch(
     user_id: int | None,
     provider_config_id: int | None = None,
     ondemand_model_id: int | None = None,
+    skill_ids: list[str] | None = None,
+    skill_names: list[str] | None = None,
 ) -> dict:
     """Creates the batch document and kicks off background execution."""
     batch_id = next_id(db, "batches")
@@ -139,6 +145,8 @@ def start_batch(
         "harness_keys": harness_keys,
         "provider_config_id": provider_config_id,
         "ondemand_model_id": ondemand_model_id,
+        "skill_ids": skill_ids,
+        "skill_names": skill_names,
         "status": "running",
         "completed_task_ids": [],
         "current_task_id": "",

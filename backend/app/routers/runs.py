@@ -229,6 +229,7 @@ def _run_out(
         can_stop=bool(viewer and is_admin(viewer) and run.get("status") in {"pending", "running"}),
         ondemand_session_id=run.get("ondemand_session_id") if is_admin(viewer) else None,
         ondemand_session_ids=_ondemand_session_ids(run) if is_admin(viewer) else None,
+        skill_names=run.get("skill_names") or [],
         is_retrying=bool(run.get("is_retrying")),
         raw_log=run.get("raw_log", "") if is_admin(viewer) else None,
         already_scored=already_scored,
@@ -268,6 +269,8 @@ async def trigger_run(body: RunRequest, db: Database = Depends(get_db), user: di
         provider_config_id=body.provider_config_id,
         user_id=user["_id"],
         ondemand_model_id=resolved_ondemand_model_id,
+        skill_ids=body.skill_ids,
+        skill_names=body.skill_names,
         # Charge the quota only once the battle has actually run, same as
         # the old await-then-charge behavior — not just for having been
         # queued. `db`/`user` are plain Mongo handles/dicts (nothing
