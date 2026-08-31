@@ -137,6 +137,7 @@ class ClaudeCodeAdapter:
             include_system_prompt=False,
             internet_access=internet_access,
             attached_reference_filenames=attached_reference_filenames,
+            skill_names=provider.workdir_skill_names,
         )
         system_prompt = (getattr(task, "system_prompt", "") or "").strip()
 

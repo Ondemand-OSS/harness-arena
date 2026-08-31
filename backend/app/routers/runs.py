@@ -1065,6 +1065,7 @@ def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None, harnes
                 "harness_name": harness_names.get(r.harness_key, r.harness_key), "model": r.model,
                 "done": r.deliverables_done, "expected": r.deliverables_expected, "status": r.status,
                 "retrying": r.is_retrying, "can_stop": r.can_stop, "submitted_by": r.submitted_by,
+                "skill_names": r.skill_names,
             }
             for r in progress_runs
         ]
@@ -1074,6 +1075,7 @@ def _board_rows_for_task(task: TaskOut, overview: TaskOverviewOut | None, harnes
                 "harness_name": harness_names.get(r.harness_key, r.harness_key), "model": r.model,
                 "status": r.status, "error_message": r.error_message or ("Run stopped." if r.status == "stopped" else ""),
                 "can_retry": r.can_retry, "submitted_by": r.submitted_by,
+                "skill_names": r.skill_names,
             }
             for r in failed_runs
         ]

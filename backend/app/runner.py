@@ -415,7 +415,9 @@ async def _execute_one_leased(
     # into this workdir here would be redundant (and inert: this harness
     # never reads its own workdir as skill context).
     if provider.ondemand_skill_ids and harness_key != "ondemand":
-        await download_and_extract_skills(workdir, provider.ondemand_api_key, provider.ondemand_skill_ids)
+        provider.workdir_skill_names = await download_and_extract_skills(
+            workdir, provider.ondemand_api_key, provider.ondemand_skill_ids
+        )
 
     def stop_requested() -> bool:
         doc = db.runs.find_one({"_id": run_id}, {"stop_requested": 1})

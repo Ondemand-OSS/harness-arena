@@ -70,6 +70,7 @@ class HermesAdapter:
             include_system_prompt=True,
             internet_access=internet_access,
             attached_reference_filenames=attached_reference_filenames,
+            skill_names=provider.workdir_skill_names,
         )
 
         via_openrouter = is_openrouter(provider.base_url)
