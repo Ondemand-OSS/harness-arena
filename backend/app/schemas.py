@@ -161,6 +161,9 @@ class RunOut(BaseModel):
     can_stop: bool = False
     ondemand_session_id: str | None = None
     ondemand_session_ids: list[str] | None = None
+    # See RunRequest.skill_names — the OnDemand skills this run was
+    # submitted with, by display name.
+    skill_names: list[str] = []
     # True while this same run record is executing after a failed attempt.
     # Kept separate from status so active runs continue to use the normal
     # pending/running lifecycle everywhere else.
@@ -196,6 +199,14 @@ class RunRequest(BaseModel):
     # routers/config.py's ondemand_model_id, routers/runs.py's
     # require_ondemand_selection). Any value sent here is ignored.
     ondemand_model_id: int | None = None
+    # Ids of the caller's own subscribed OnDemand skills (routers/ondemand_skills.py)
+    # to extract into every harness's workdir for this run.
+    skill_ids: list[str] | None = None
+    # Display-only names for the same skills, supplied by the client (which
+    # already has them from GET /api/ondemand-skills) purely so a run
+    # remembers what was picked without a later viewer needing the
+    # submitter's own OnDemand key to look names back up from ids.
+    skill_names: list[str] | None = None
 
 
 class RunTriggerOut(BaseModel):

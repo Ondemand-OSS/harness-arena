@@ -32,6 +32,17 @@ served as a running website, so build a real, self-contained project:
 """
 
 
+def _skills_note(skill_names: list[str]) -> str:
+    listed = "\n".join(f"- skills/{name}/" for name in skill_names)
+    return (
+        "User-defined skills are present in the following folder(s) under the current working "
+        f"directory:\n{listed}\n"
+        "Each folder contains a SKILL.md describing what it's for and how to use it, plus any "
+        "supporting files. If a skill is relevant to this task, read its SKILL.md and follow it. "
+        "Ignore any skill that isn't relevant — do not force one in."
+    )
+
+
 def build_prompt(
     task,
     include_system_prompt: bool = True,
@@ -41,6 +52,7 @@ def build_prompt(
     deliverable_urls: bool = False,
     attached_reference_uploaded: bool = False,
     inlined_reference_files: list[tuple[str, str]] | None = None,
+    skill_names: list[str] | None = None,
 ) -> str:
     parts = []
 
@@ -56,6 +68,9 @@ def build_prompt(
 
     if internet_access:
         parts += ["", INTERNET_ACCESS_NOTE]
+
+    if skill_names:
+        parts += ["", _skills_note(skill_names)]
 
     deliverables = parse_deliverables(getattr(task, "expected_deliverables", ""))
     web_project = is_web_project(getattr(task, "expected_deliverables", ""))

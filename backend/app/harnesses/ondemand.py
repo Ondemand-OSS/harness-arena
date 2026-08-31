@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 
+from ..ondemand_skills import resolve_skill_names
 from ..taxonomy import parse_deliverables
 from ..webproject import is_web_project
 from ._prompt import build_prompt
@@ -839,6 +840,13 @@ class OnDemandAdapter:
             suggested_ids = await _suggest_plugin_ids(
                 client, getattr(task, "prompt", ""), headers, provider.ondemand_suggest_plugins_enabled
             )
+            # The user's selected skills, resolved to the NAMES OnDemand's
+            # query API wants (see ondemand_skills.resolve_skill_names) —
+            # its own backend fetches and injects each one (SKILL.md,
+            # bundle) into its Goose-backed execution from here, so this
+            # harness sends names instead of extracting the zip itself the
+            # way every other harness does (see runner.py).
+            skill_names = await resolve_skill_names(secret, provider.ondemand_skill_ids)
             real_attempt = 0
             removal_round = 0
             # Agent ids we've stopped sending — see the inactive-agent
@@ -896,6 +904,8 @@ class OnDemandAdapter:
                             "responseMode": "stream",
                             "reasoningEffort": provider.ondemand_reasoning_effort or REASONING_EFFORT,
                         }
+                        if skill_names:
+                            query_body["skillNames"] = skill_names
                         answer, event_urls, preview_info, query_error = await _stream_query(
                             client,
                             f"{BASE_URL}/chat/v1/sessions/{session_id}/query",

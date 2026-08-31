@@ -21,6 +21,7 @@ from .harnesses.base import ProviderSettings, RunResult
 from .harnesses.registry import get_adapter
 from .logger import get_logger, log_error
 from .mongo import MONGODB_DB_NAME
+from .ondemand_skills import download_and_extract_skills
 
 log = get_logger("runner")
 from .routers.config import effective_reasoning_effort
@@ -408,6 +409,15 @@ async def _execute_one_leased(
     # while giving each harness its own place to hang its own callbacks.
     provider = dataclasses.replace(provider)
     workdir = tempfile.mkdtemp(prefix=f"harness-run-{run_id}-")
+    # OnDemand's own harness sends selected skills straight to OnDemand's
+    # chat query API instead (see harnesses/ondemand.py's `skillNames`) — its
+    # backend fetches and injects the skill itself, so extracting the zip
+    # into this workdir here would be redundant (and inert: this harness
+    # never reads its own workdir as skill context).
+    if provider.ondemand_skill_ids and harness_key != "ondemand":
+        provider.workdir_skill_names = await download_and_extract_skills(
+            workdir, provider.ondemand_api_key, provider.ondemand_skill_ids
+        )
 
     def stop_requested() -> bool:
         doc = db.runs.find_one({"_id": run_id}, {"stop_requested": 1})
@@ -709,10 +719,12 @@ async def retry_existing_run(run_id: int, user_id: int | None = None) -> None:
     if run is None:
         return
     provider = get_provider_settings(db, run.get("provider_config_id"))
+    skill_ids = run.get("skill_ids") or []
+    provider.ondemand_skill_ids = skill_ids
+    if (skill_ids or run["harness_key"] == "ondemand") and user_id is not None:
+        user_doc = db.users.find_one({"_id": user_id})
+        provider.ondemand_api_key = (user_doc or {}).get("ondemand_api_key") or ""
     if run["harness_key"] == "ondemand":
-        if user_id is not None:
-            user_doc = db.users.find_one({"_id": user_id})
-            provider.ondemand_api_key = (user_doc or {}).get("ondemand_api_key") or ""
         model_doc = db.ondemand_models.find_one({"_id": run.get("ondemand_model_id")})
         provider.ondemand_endpoint_id = (model_doc or {}).get("endpoint_id") or ""
         provider.ondemand_reasoning_effort = (model_doc or {}).get("reasoning_effort") or ""
@@ -728,6 +740,8 @@ def prepare_runs(
     provider_config_id: int | None = None,
     user_id: int | None = None,
     ondemand_model_id: int | None = None,
+    skill_ids: list[str] | None = None,
+    skill_names: list[str] | None = None,
 ) -> tuple[list[int], list[tuple[int, str]], ProviderSettings]:
     """Insert this battle's run rows (already leased to this process) and
     return what's needed to execute them, without executing anything yet.
@@ -748,6 +762,13 @@ def prepare_runs(
     # harnesses' model lives in the router, before this function is ever
     # called (routers/runs.py, routers/batches.py).
     ondemand_model_label = ""
+    # Selected skills come from the user's OnDemand account regardless of
+    # which harnesses are actually running this battle, so their API key is
+    # needed here even when "ondemand" itself isn't one of harness_keys.
+    if skill_ids and "ondemand" not in harness_keys and user_id is not None:
+        user_doc = db.users.find_one({"_id": user_id})
+        provider.ondemand_api_key = (user_doc or {}).get("ondemand_api_key") or ""
+    provider.ondemand_skill_ids = skill_ids or []
     if "ondemand" in harness_keys:
         if user_id is not None:
             user_doc = db.users.find_one({"_id": user_id})
@@ -792,6 +813,11 @@ def prepare_runs(
                 "task_id": task_id,
                 "harness_key": harness_key,
                 "provider_config_id": provider_config_id,
+                # Stored per-run (not just passed through) so a later Retry
+                # (see retry_existing_run) can reapply the same skills.
+                "skill_ids": skill_ids or [],
+                # Display-only — see schemas.RunRequest.skill_names.
+                "skill_names": skill_names or [],
                 # Only meaningful for the "ondemand" harness_key — stored
                 # per-run (not just passed through) so a later Retry (see
                 # routers/runs.py::retry_run, which only knows this one run
@@ -842,6 +868,8 @@ async def run_task(
     provider_config_id: int | None = None,
     user_id: int | None = None,
     ondemand_model_id: int | None = None,
+    skill_ids: list[str] | None = None,
+    skill_names: list[str] | None = None,
 ) -> tuple[list[int], list[str]]:
     """Create fresh runs for every selected harness and execute them,
     returning only once every harness has finished.
@@ -863,6 +891,8 @@ async def run_task(
         provider_config_id=provider_config_id,
         user_id=user_id,
         ondemand_model_id=ondemand_model_id,
+        skill_ids=skill_ids,
+        skill_names=skill_names,
     )
     await execute_prepared_runs(task_id, to_execute, provider)
     return run_ids, []
@@ -876,6 +906,8 @@ def start_runs(
     provider_config_id: int | None = None,
     user_id: int | None = None,
     ondemand_model_id: int | None = None,
+    skill_ids: list[str] | None = None,
+    skill_names: list[str] | None = None,
     on_complete: Callable[[], None] | None = None,
 ) -> tuple[list[int], list[str]]:
     """Create this battle's runs and execute them in the BACKGROUND,
@@ -911,6 +943,8 @@ def start_runs(
         provider_config_id=provider_config_id,
         user_id=user_id,
         ondemand_model_id=ondemand_model_id,
+        skill_ids=skill_ids,
+        skill_names=skill_names,
     )
 
     async def _run_then_complete() -> None:

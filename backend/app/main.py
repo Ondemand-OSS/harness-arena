@@ -17,7 +17,7 @@ from .cache import connection_status as cache_connection_status
 from .cache import enabled as cache_enabled
 from .db import close_client, get_db, init_db
 from .logger import get_logger, log_error
-from .routers import batches, config, deploy, harnesses, leaderboard, ondemand_models, runs, scores, stats, tasks, users
+from .routers import batches, config, deploy, harnesses, leaderboard, ondemand_models, ondemand_skills, runs, scores, stats, tasks, users
 from .batches import reconcile_orphaned_batches
 from .runner import reconciliation_loop, reconcile_orphaned_runs
 
@@ -115,6 +115,7 @@ app.include_router(tasks.router)
 app.include_router(config.router)
 app.include_router(harnesses.router)
 app.include_router(ondemand_models.router)
+app.include_router(ondemand_skills.router)
 app.include_router(runs.router)
 # Registered after runs.router: both are prefixed /api/runs, and these are
 # distinct sub-paths (/{id}/preview, /{id}/project.zip) rather than
