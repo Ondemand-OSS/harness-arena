@@ -779,6 +779,8 @@ async def _suggest_plugin_ids(client: httpx.AsyncClient, query: str, headers: di
         plugin_id = plugin.get("pluginId") or plugin.get("id")
         if not plugin_id:
             continue
+        if plugin.get("identifier") in ("mqtt", "plugin_knowledge_chat"):
+            continue
         plugin_config = plugin.get("pluginConfiguration") or {}
         if plugin.get("isSubscribed"):
             if plugin_config.get("active") is True:
