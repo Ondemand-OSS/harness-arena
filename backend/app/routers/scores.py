@@ -182,10 +182,19 @@ def _selected_done_runs(db: Database, task_id: str, provider_config_id: int | No
     return runs
 
 
-def _ensure_task_is_finished(db: Database, task_id: str) -> None:
-    if db.runs.find_one(
-        {"task_id": task_id, "status": {"$in": ["pending", "running"]}, "is_deleted": {"$ne": True}}, {"_id": 1}
-    ):
+def _ensure_task_is_finished(
+    db: Database, task_id: str, provider_config_id: int | None = None, run_ids: list[int] | None = None
+) -> None:
+    query = {"task_id": task_id, "status": {"$in": ["pending", "running"]}, "is_deleted": {"$ne": True}}
+    if run_ids:
+        round_ids = db.runs.distinct("round_id", {"_id": {"$in": run_ids}, "round_id": {"$ne": None}})
+        if round_ids:
+            query["round_id"] = {"$in": round_ids}
+        else:
+            query["_id"] = {"$in": run_ids}
+    elif provider_config_id is not None:
+        query["provider_config_id"] = provider_config_id
+    if db.runs.find_one(query, {"_id": 1}):
         raise HTTPException(
             status_code=409,
             detail="this task is still in progress. Wait for every run to finish before judging",
@@ -252,12 +261,11 @@ def compare(
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
 
-    _ensure_task_is_finished(db, task_id)
-
     try:
         requested_run_ids = [int(value) for value in run_ids.split(",") if value] if run_ids else None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="run ids must be numbers") from exc
+    _ensure_task_is_finished(db, task_id, provider_config_id, requested_run_ids)
     runs = sorted(_selected_done_runs(db, task_id, provider_config_id, requested_run_ids), key=lambda r: r["_id"])
     if not runs:
         return CompareOut(task_id=task_id, revealed=False, entries=[])
@@ -329,7 +337,7 @@ def submit_scores(body: ScoreIn, db: Database = Depends(get_db), _user=Depends(r
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
 
-    _ensure_task_is_finished(db, body.task_id)
+    _ensure_task_is_finished(db, body.task_id, body.provider_config_id, body.run_ids)
 
     # Each user gets one blind verdict per task. Submitting reveals which
     # harness produced which output to that person, so a later score from the
