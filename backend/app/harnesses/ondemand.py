@@ -985,13 +985,13 @@ class OnDemandAdapter:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as dl_client:
             downloaded = await _collect_url_deliverables(dl_client, answer, task, workdir, event_urls)
 
-        # A web task that OnDemand deployed itself: copy the project out of
-        # its sandbox so this run owns the source. OnDemand packages
-        # screenshots rather than code, so without this the run is a
-        # preview URL with nothing behind it — unjudgeable as soon as that
-        # sandbox expires, and impossible to redeploy.
+  
         pulled: list[str] = []
-        if preview_info.get("sandbox_id") and is_web_project(getattr(task, "expected_deliverables", "")):
+        if (
+            not downloaded
+            and preview_info.get("sandbox_id")
+            and is_web_project(getattr(task, "expected_deliverables", ""))
+        ):
             pulled = await _pull_sandbox_sources(preview_info["sandbox_id"], workdir)
             if pulled:
                 log.info("pulled %d source files from OnDemand sandbox %s", len(pulled), preview_info["sandbox_id"])
@@ -1007,11 +1007,16 @@ class OnDemandAdapter:
                 f.write(answer.strip() + "\n")
             deliverables = [filename]
 
+        # A live Vercel URL has first priority. Only when it is absent will
+        # the arena deploy file_url/intermediate_files through the same
+        # preview path used for the other harnesses.
+        use_harness_preview = bool(preview_info.get("preview_url"))
+
         return RunResult(
             ok=True,
             deliverables=deliverables,
             raw_log=_append_attempt_diagnostics(answer, attempt_log, secret),
             ondemand_session_id=session_id,
-            preview_url=preview_info.get("preview_url", ""),
-            preview_sandbox_id=preview_info.get("sandbox_id", ""),
+            preview_url=preview_info.get("preview_url", "") if use_harness_preview else "",
+            preview_sandbox_id=preview_info.get("sandbox_id", "") if use_harness_preview else "",
         )
