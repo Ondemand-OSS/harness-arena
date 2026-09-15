@@ -25,10 +25,10 @@ from ..webproject import is_web_project
 
 TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "7200"))
 OPENCLAW_BIN = os.environ.get("ARENA_OPENCLAW_BIN", "openclaw")
-# Where the Docker image installs OpenClaw's private Node 22 (see
+# Where the Docker image installs OpenClaw's private supported Node (see
 # backend/Dockerfile) — must be ahead of PATH's system Node when we spawn
 # OpenClaw, or its `env node` shebang silently resolves the wrong Node.
-_NODE22_BIN = os.environ.get("ARENA_OPENCLAW_NODE_BIN", "/opt/node22/bin")
+_OPENCLAW_NODE_BIN = os.environ.get("ARENA_OPENCLAW_NODE_BIN", "/opt/node24/bin")
 
 # Registered as a custom provider in a per-run config (see run() below) — the
 # docs' `agent exec` command with --isolated/--auth-env-only/--cwd does not
@@ -188,10 +188,10 @@ class OpenClawAdapter:
             # so it doesn't run under the system's older Node — but that
             # only holds if this private bin dir is actually on PATH when
             # we spawn it, which shouldn't depend solely on the image's own
-            # wrapper script getting that right. _NODE22_BIN is a no-op
+            # wrapper script getting that right. _OPENCLAW_NODE_BIN is a no-op
             # anywhere that directory doesn't exist (e.g. local dev).
-            if os.path.isdir(_NODE22_BIN):
-                env["PATH"] = f"{_NODE22_BIN}{os.pathsep}{env.get('PATH', '')}"
+            if os.path.isdir(_OPENCLAW_NODE_BIN):
+                env["PATH"] = f"{_OPENCLAW_NODE_BIN}{os.pathsep}{env.get('PATH', '')}"
             # OpenClaw honours this environment override as well as the
             # global CLI flag. Keeping both makes the intended diagnostic
             # level explicit even if a wrapper reorders CLI arguments.
