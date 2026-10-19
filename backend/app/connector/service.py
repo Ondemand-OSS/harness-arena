@@ -248,6 +248,8 @@ async def _execute(db: Database, task_id: str) -> None:
             task_id,
             IGNORED_OUTPUTS.get(task_doc["agent"], set()),
         )
+        for prefix in {workdir, os.path.realpath(workdir)}:
+            answer = answer.replace(prefix, ".")
         if not answer and not outputs:
             _finish(db, task_id, "error", error="The agent finished without writing a reply or any files.")
             return
