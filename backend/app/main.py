@@ -17,9 +17,11 @@ from .cache import connection_status as cache_connection_status
 from .cache import enabled as cache_enabled
 from .db import close_client, get_db, init_db
 from .logger import get_logger, log_error
-from .routers import batches, config, deploy, harnesses, leaderboard, ondemand_models, ondemand_skills, runs, scores, stats, tasks, users
+from .routers import batches, config, connector, connector_oauth, deploy, harnesses, leaderboard, ondemand_models, ondemand_skills, runs, scores, stats, tasks, users
 from .batches import reconcile_orphaned_batches
 from .runner import reconciliation_loop, reconcile_orphaned_runs
+from .connector.service import reconcile_stale_tasks, sweep_loop as connector_sweep_loop
+from .connector.store import ensure_connector_indexes, seed_client
 
 log = get_logger("main")
 
@@ -52,6 +54,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 # Long-lived background reconciliation task (see on_startup).
 _reconciler: asyncio.Task | None = None
+_connector_sweeper: asyncio.Task | None = None
 
 # Local development origins plus configured deployment origins.
 _extra_origins = [o.strip() for o in os.environ.get("ARENA_CORS_ORIGINS", "").split(",") if o.strip()]
@@ -80,6 +83,9 @@ async def allow_embedding(request, call_next):
 def on_startup():
     db = get_db()
     init_db(db)
+    ensure_connector_indexes(db)
+    seed_client(db)
+    reconcile_stale_tasks(db)
     # Reclaim work with expired execution leases.
     reconciled = reconcile_orphaned_runs(db)
     if reconciled:
@@ -98,6 +104,8 @@ def on_startup():
     # Keep a strong reference to the periodic reconciliation task.
     global _reconciler
     _reconciler = asyncio.create_task(reconciliation_loop())
+    global _connector_sweeper
+    _connector_sweeper = asyncio.create_task(connector_sweep_loop())
 
 
 @app.on_event("shutdown")
@@ -124,6 +132,8 @@ app.include_router(deploy.router)
 app.include_router(scores.router)
 app.include_router(leaderboard.router)
 app.include_router(stats.router)
+app.include_router(connector_oauth.router)
+app.include_router(connector.router)
 
 
 @app.get("/api/health")
