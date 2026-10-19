@@ -104,6 +104,11 @@ def build_prompt(
 
     if web_project:
         parts += ["", "## Web project requirements", WEB_PROJECT_NOTE]
+        if deliverable_urls:
+            parts += [
+                "",
+                "Deploy the completed frontend and include the live deployed URL in your final response.",
+            ]
 
     attached = list(attached_reference_filenames or [])
     inlined = list(inlined_reference_files or [])
