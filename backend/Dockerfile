@@ -47,6 +47,7 @@ RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
         && chmod -R a+rX /opt/hermes-local \
         && ln -sf /opt/hermes-local/bin/hermes /usr/local/bin/hermes; \
     }) \
+    && if [ -d /root/.hermes ]; then chmod a+x /root && chmod -R a+rX /root/.hermes; fi \
     && hermes --version
 
 # OpenCode
@@ -64,6 +65,8 @@ COPY backend/ .
 
 RUN useradd --create-home --home-dir /home/appuser appuser \
     && chown -R appuser:appuser /app
+
+RUN su appuser -s /bin/sh -c 'hermes --version && openclaw --version'
 
 ENV HOME=/home/appuser
 USER appuser
