@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import uuid
 
+from ._env import agent_env
 from ._collect import (
     DeliverableLimitExceeded,
     collect_deliverables,
@@ -160,7 +161,7 @@ class OpenClawAdapter:
             if provider.reasoning_effort:
                 command += ["--thinking", provider.reasoning_effort]
 
-            env = os.environ.copy()
+            env = agent_env()
             env["OPENCLAW_STATE_DIR"] = state_dir
             env["OPENCLAW_CONFIG_PATH"] = config_path
             # Confirmed via docs.openclaw.ai/logging (fetched directly, not

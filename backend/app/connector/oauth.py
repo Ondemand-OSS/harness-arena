@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import hmac
 import html
+import json
 import re
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 
@@ -231,3 +232,16 @@ def render_error(message: str) -> str:
     head, _, rest = PAGE.partition("<main>")
     body = f"<main>\n<h1>Cannot connect</h1>\n<p>{html.escape(message)}</p>\n</main>\n</body>\n</html>"
     return head.format(title="Cannot connect") + body
+
+
+def render_redirect(url: str) -> str:
+    head, _, _rest = PAGE.partition("<main>")
+    safe_url = html.escape(url, quote=True)
+    js_url = json.dumps(url).replace("<", "\\u003c")
+    refresh = f'<meta http-equiv="refresh" content="0;url={safe_url}">'
+    body = (
+        "<main>\n<h1>Connecting</h1>\n<p>If you are not redirected automatically, "
+        f'<a href="{safe_url}">continue</a>.</p>\n'
+        f"<script>window.location.replace({js_url});</script>\n</main>\n</body>\n</html>"
+    )
+    return head.replace("</head>", refresh + "\n</head>", 1).format(title="Connecting") + body

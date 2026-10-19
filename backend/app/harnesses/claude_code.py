@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 
+from ._env import agent_env
 from ._collect import (
     DeliverableLimitExceeded,
     collect_deliverables,
@@ -161,7 +162,7 @@ class ClaudeCodeAdapter:
         if system_prompt:
             command += ["--append-system-prompt", system_prompt]
 
-        env = os.environ.copy()
+        env = agent_env()
         env["ANTHROPIC_API_KEY"] = provider.api_key
         if via_openrouter:
             env["ANTHROPIC_BASE_URL"] = ANTHROPIC_COMPATIBLE_BASE_URL

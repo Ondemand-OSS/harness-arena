@@ -4,7 +4,7 @@ import base64
 import binascii
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pymongo.database import Database
 
 from ..connector import oauth
@@ -19,6 +19,10 @@ AUTHORIZE_FIELDS = ("client_id", "redirect_uri", "response_type", "scope", "stat
 
 def _page(content: str, status_code: int = 200) -> HTMLResponse:
     return HTMLResponse(content, status_code=status_code, headers={**NO_STORE, "Referrer-Policy": "no-referrer"})
+
+
+def _redirect(url: str) -> HTMLResponse:
+    return _page(oauth.render_redirect(url))
 
 
 def _oauth_error(error: str, description: str = "", status_code: int = 400) -> JSONResponse:
@@ -50,10 +54,8 @@ def authorize_form(request: Request, db: Database = Depends(get_db)):
     if parsed is None:
         return _page(oauth.render_error(description or "Invalid request."), 400)
     if error:
-        return RedirectResponse(
-            oauth.redirect_with(parsed.redirect_uri, error=error, error_description=description or "", state=parsed.state),
-            status_code=302,
-            headers=NO_STORE,
+        return _redirect(
+            oauth.redirect_with(parsed.redirect_uri, error=error, error_description=description or "", state=parsed.state)
         )
     mode = "signup" if params.get("mode") == "signup" else "login"
     return _page(oauth.render_form(parsed, mode))
@@ -67,10 +69,8 @@ async def authorize_submit(request: Request, db: Database = Depends(get_db)):
     if parsed is None:
         return _page(oauth.render_error(description or "Invalid request."), 400)
     if error:
-        return RedirectResponse(
-            oauth.redirect_with(parsed.redirect_uri, error=error, error_description=description or "", state=parsed.state),
-            status_code=303,
-            headers=NO_STORE,
+        return _redirect(
+            oauth.redirect_with(parsed.redirect_uri, error=error, error_description=description or "", state=parsed.state)
         )
     mode = "signup" if form.get("mode") == "signup" else "login"
     email = str(form.get("email", ""))
@@ -82,9 +82,7 @@ async def authorize_submit(request: Request, db: Database = Depends(get_db)):
     if user is None:
         return _page(oauth.render_form(parsed, mode, error=message or "", email=email), 400)
     code = oauth.issue_code(db, parsed, user["_id"])
-    return RedirectResponse(
-        oauth.redirect_with(parsed.redirect_uri, code=code, state=parsed.state), status_code=303, headers=NO_STORE
-    )
+    return _redirect(oauth.redirect_with(parsed.redirect_uri, code=code, state=parsed.state))
 
 
 @router.post("/token")

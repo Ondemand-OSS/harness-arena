@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 
+from ._env import agent_env
 from ._collect import (
     DeliverableLimitExceeded,
     collect_deliverables,
@@ -113,7 +114,7 @@ class CodexAdapter:
         if provider.reasoning_effort:
             command += ["--config", f'model_reasoning_effort="{provider.reasoning_effort}"']
 
-        env = os.environ.copy()
+        env = agent_env()
         if _is_openai_default(provider.base_url):
             env["OPENAI_API_KEY"] = provider.api_key
         elif via_openrouter:

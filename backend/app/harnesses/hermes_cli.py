@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 
+from ._env import agent_env
 from ._collect import (
     DeliverableLimitExceeded,
     collect_deliverables,
@@ -104,7 +105,7 @@ class HermesAdapter:
             if provider.reasoning_effort:
                 command += ["--reasoning", provider.reasoning_effort]
 
-            env = os.environ.copy()
+            env = agent_env()
             env["HERMES_HOME"] = hermes_home
             if via_openrouter:
                 env["OPENROUTER_API_KEY"] = provider.api_key

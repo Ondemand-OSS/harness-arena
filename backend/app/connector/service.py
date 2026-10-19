@@ -221,7 +221,7 @@ async def _execute(db: Database, task_id: str) -> None:
         _finish(db, task_id, "error", error="Unknown agent.")
         return
 
-    blobs = _load_attachments(db, task_doc.get("input_file_ids", []))
+    blobs = await asyncio.to_thread(_load_attachments, db, task_doc.get("input_file_ids", []))
     task = types.SimpleNamespace(
         title="Request",
         prompt=task_doc["message"] + PROMPT_SUFFIX,
@@ -239,8 +239,14 @@ async def _execute(db: Database, task_id: str) -> None:
         if not result.ok:
             _finish(db, task_id, "error", error=(result.error_message or "The agent failed.")[:ERROR_MAX_CHARS])
             return
-        answer, outputs = _collect_outputs(
-            db, workdir, result.deliverables, task_doc["user_id"], task_id, IGNORED_OUTPUTS.get(task_doc["agent"], set())
+        answer, outputs = await asyncio.to_thread(
+            _collect_outputs,
+            db,
+            workdir,
+            result.deliverables,
+            task_doc["user_id"],
+            task_id,
+            IGNORED_OUTPUTS.get(task_doc["agent"], set()),
         )
         if not answer and not outputs:
             _finish(db, task_id, "error", error="The agent finished without writing a reply or any files.")
@@ -253,15 +259,12 @@ async def _execute(db: Database, task_id: str) -> None:
 def purge_expired(db: Database) -> None:
     cutoff = utcnow() - dt.timedelta(days=settings.RETENTION_DAYS)
     stored = bucket(db)
-    for task in db.connector_tasks.find({"finished_at": {"$lt": cutoff}}, {"output_files": 1, "input_file_ids": 1}):
+    for task in db.connector_tasks.find({"finished_at": {"$lt": cutoff}}, {"output_files": 1}):
         for item in task.get("output_files", []):
             file_id = parse_object_id(item["id"])
             if file_id is not None:
                 with contextlib.suppress(Exception):
                     stored.delete(file_id)
-        for file_id in task.get("input_file_ids", []):
-            with contextlib.suppress(Exception):
-                stored.delete(file_id)
         db.connector_tasks.delete_one({"_id": task["_id"]})
     for orphan in files_collection(db).find({"uploadDate": {"$lt": cutoff}, "metadata.kind": "upload"}, {"_id": 1}):
         in_use = db.connector_tasks.count_documents({"input_file_ids": orphan["_id"]}, limit=1)

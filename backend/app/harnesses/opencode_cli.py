@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 
+from ._env import agent_env
 from ._collect import (
     DeliverableLimitExceeded,
     collect_deliverables,
@@ -123,7 +124,7 @@ class OpenCodeAdapter:
             prompt,
         ]
 
-        env = os.environ.copy()
+        env = agent_env()
         env["OPENCODE_CONFIG"] = config_path
         env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
         env["OPENAI_API_KEY"] = provider.api_key

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -39,6 +41,12 @@ def _task_out(request: Request, doc: dict) -> TaskOut:
         started_at=doc.get("started_at"),
         finished_at=doc.get("finished_at"),
     )
+
+
+def _content_disposition(filename: str) -> str:
+    name = os.path.basename(filename or "") or "download"
+    fallback = "".join(ch for ch in name if 32 <= ord(ch) < 127 and ch not in '"\\').strip() or "download"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 def _owned_task(db: Database, user: dict, task_id: str) -> dict:
@@ -89,7 +97,7 @@ async def upload_file(
         chunks.append(chunk)
     if total == 0:
         raise HTTPException(status_code=400, detail="file is empty")
-    stored = service.store_bytes(db, name, b"".join(chunks), user["_id"], "upload")
+    stored = await asyncio.to_thread(service.store_bytes, db, name, b"".join(chunks), user["_id"], "upload")
     return _file_out(request, stored)
 
 
@@ -104,11 +112,10 @@ def download_file(
     if record is None or (record.get("metadata") or {}).get("user_id") != user["_id"]:
         raise HTTPException(status_code=404, detail="file not found")
     stream = bucket(db).open_download_stream(object_id)
-    name = os.path.basename(record["filename"]).replace('"', "")
     return StreamingResponse(
         iter(lambda: stream.read(UPLOAD_CHUNK_BYTES), b""),
         media_type=(record.get("metadata") or {}).get("mime", "application/octet-stream"),
-        headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Content-Type-Options": "nosniff"},
+        headers={"Content-Disposition": _content_disposition(record["filename"]), "X-Content-Type-Options": "nosniff"},
     )
 
 
