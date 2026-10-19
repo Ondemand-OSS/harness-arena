@@ -24,6 +24,8 @@ from ..webproject import is_web_project
 
 TIMEOUT_SECONDS = float(os.environ.get("ARENA_HARNESS_TIMEOUT_SECONDS", "7200"))
 HERMES_BIN = os.environ.get("ARENA_HERMES_BIN", "hermes")
+HERMES_SHARED_HOME = os.environ.get("ARENA_HERMES_SHARED_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+_SHARED_HOME_ENTRIES = ("installs", "source-checks")
 
 _OPENAI_DEFAULT_HOSTS = {"api.openai.com"}
 
@@ -40,6 +42,22 @@ def _is_openai_default(base_url: str) -> bool:
     if not base_url:
         return True
     return any(host in base_url for host in _OPENAI_DEFAULT_HOSTS)
+
+
+def _link_shared_install_state(hermes_home: str) -> None:
+    if not os.path.isdir(os.path.join(HERMES_SHARED_HOME, "installs")):
+        return
+    for entry in _SHARED_HOME_ENTRIES:
+        source = os.path.join(HERMES_SHARED_HOME, entry)
+        if os.path.isdir(source):
+            os.symlink(source, os.path.join(hermes_home, entry))
+
+
+def _shared_runtime_dir() -> str | None:
+    tools = os.path.join(HERMES_SHARED_HOME, "tools")
+    if os.path.isdir(os.path.join(HERMES_SHARED_HOME, "installs")) and os.path.isdir(tools):
+        return os.path.realpath(tools)
+    return None
 
 
 def _yaml_str(value: str) -> str:
@@ -83,6 +101,7 @@ class HermesAdapter:
         # memories would otherwise get swept up as "output files".
         hermes_home = tempfile.mkdtemp(prefix="hermes-home-")
         try:
+            _link_shared_install_state(hermes_home)
             command = [
                 HERMES_BIN,
                 "chat",
@@ -107,6 +126,9 @@ class HermesAdapter:
 
             env = agent_env()
             env["HERMES_HOME"] = hermes_home
+            runtime_dir = _shared_runtime_dir()
+            if runtime_dir:
+                env["HERMES_RUNTIME_DIR"] = runtime_dir
             if via_openrouter:
                 env["OPENROUTER_API_KEY"] = provider.api_key
                 command += ["--provider", "openrouter"]

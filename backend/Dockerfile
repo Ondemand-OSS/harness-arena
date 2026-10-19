@@ -31,24 +31,17 @@ RUN export PATH="/opt/node24/bin:$PATH" \
     && chmod +x /usr/local/bin/openclaw \
     && /usr/local/bin/openclaw --version
 
+RUN useradd --create-home --home-dir /home/appuser appuser
+
 # Hermes.
-# Give Hermes Node 24 for its npm dependency installation,
-# without changing the system Node 18 used elsewhere.
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
-    -o /tmp/hermes-install.sh \
-    && chmod +x /tmp/hermes-install.sh \
-    && PATH="/opt/node24/bin:$PATH" \
-       bash /tmp/hermes-install.sh \
-       --skip-setup \
-       --skip-browser \
-       --skip-computer-use \
-    && (command -v hermes || { \
-        mv "$HOME/.local" /opt/hermes-local \
-        && chmod -R a+rX /opt/hermes-local \
-        && ln -sf /opt/hermes-local/bin/hermes /usr/local/bin/hermes; \
-    }) \
-    && if [ -d /root/.hermes ]; then chmod a+x /root && chmod -R a+rX /root/.hermes; fi \
-    && hermes --version
+# Installed as the app user: its dependency state lives under ~/.hermes and
+# must be owned by the user that runs it. Node 24 is only on PATH for the
+# installer, without changing the system Node 18 used elsewhere.
+RUN su appuser -s /bin/bash -c 'export HOME=/home/appuser PATH="/opt/node24/bin:$PATH" \
+    && cd "$HOME" \
+    && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/hermes-install.sh \
+    && bash /tmp/hermes-install.sh --skip-setup --skip-browser --skip-computer-use' \
+    && ln -sf /home/appuser/.local/bin/hermes /usr/local/bin/hermes
 
 # OpenCode
 RUN curl -fsSL https://opencode.ai/install | bash \
@@ -63,10 +56,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
 
-RUN useradd --create-home --home-dir /home/appuser appuser \
-    && chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app
 
-RUN su appuser -s /bin/sh -c 'hermes --version && openclaw --version'
+RUN su appuser -s /bin/bash -c 'export HOME=/home/appuser \
+    && T=$(mktemp -d) \
+    && for d in installs source-checks; do ln -s "$HOME/.hermes/$d" "$T/$d"; done \
+    && HERMES_RUNTIME_DIR="$(readlink -f "$HOME/.hermes/tools")" HERMES_HOME="$T" hermes --version \
+    && openclaw --version'
 
 ENV HOME=/home/appuser
 USER appuser
